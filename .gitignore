@@ -1,0 +1,30 @@
+# Environment variables
+.env
+.env.local
+.env*.local
+
+# Python cache / build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local cache
+_cache/
+
+# Logs
+*.log
+
+# Backup files (Phase backup snapshots — keep outside git)
+*.backup-*.json
+*.backup-before-phase*.json
+backup-before-phase*.json
+*.bak
+
+# Temp / OS files
+*.tmp
+.DS_Store
+Thumbs.db

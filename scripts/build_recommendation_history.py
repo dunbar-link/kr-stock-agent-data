@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -3165,6 +3167,9 @@ def build_decision_phrase(item):
     sales_cagr = safe_number(item.get("salesCagr3Y"))
     eps_growth = safe_number(item.get("EPSGrowth3Y"))
     news_score = safe_number(item.get("newsScore"))
+    div_yield = safe_number(item.get("dividendYield"))
+    industry_name_dp = item.get("industryName") if isinstance(item.get("industryName"), str) else ""
+    ig = classify_industry_group(industry_name_dp)
 
     undervalued = (0 < per <= 12) or (0 < pbr <= 1)
     improving = growth >= 20 or sales_growth >= 10
@@ -3233,6 +3238,26 @@ def build_decision_phrase(item):
                 f" 가격 데이터 확인 후 재검토 권장."
             )
         if growth >= 60:
+            if ig == "project":
+                return (
+                    f"영업이익 {growth:.0f}% 급증."
+                    f" 수주 인식 집중 여부 점검하며 보조 후보 유지."
+                )
+            if ig == "finance":
+                return (
+                    f"영업이익 {growth:.0f}% 급증."
+                    f" 비이자이익·충당금 구조 확인 후 보조 후보 유지."
+                )
+            if ig == "defensive":
+                return (
+                    f"영업이익 {growth:.0f}% 급증."
+                    f" 비용 구조 개선 여부 확인하며 보조 후보 유지."
+                )
+            if margin >= 10:
+                return (
+                    f"영업이익 {growth:.0f}% 급증·이익률 {margin:.1f}% 유지."
+                    f" 일회성 여부 점검 후 보조 후보 유지."
+                )
             return (
                 f"영업이익 {growth:.0f}% 급증 구간."
                 f" 일회성 여부 점검 후 보조 후보로 유지."
@@ -3267,20 +3292,63 @@ def build_decision_phrase(item):
             f" 가격 데이터 재확인 후 재검토."
         )
     if undervalued:
-        return "가격 매력은 있으나 추가 성장 촉매 확인 전까지 보조 후보."
+        if ig == "project":
+            if 0 < per <= 12:
+                return f"PER {per:.1f}배로 가격 부담은 낮으나, 수주 잔고 증가 확인 전까지 보조 후보."
+            return "수주 사이클 대비 가격 부담은 낮으나, 수주 잔고 증가 확인 전까지 보조 후보."
+        if ig == "finance":
+            return "자산 대비 가격 매력은 있으나 이익 성장 신호 확인 전까지 보조 후보."
+        if ig == "defensive":
+            if div_yield >= 3:
+                return f"배당수익률 {div_yield:.1f}%가 방어 요인. 성장 촉매 확인 전까지 관찰 후보."
+            return "방어 업종으로 가격 부담은 낮으나 외형 성장 신호 확인이 필요합니다."
+        if ig == "tech":
+            return "가격 지표로는 매력적이나 제품 사이클 회복 확인 전까지 보조 후보."
+        if ig == "bio":
+            return "파이프라인 대비 가격 부담은 낮은 편이나 임상 진전 확인 후 재평가."
+        if 0 < per <= 8:
+            return f"PER {per:.1f}배로 저평가 구간이나 성장 촉매 확인 전까지 보조 후보."
+        if 0 < pbr <= 0.7:
+            return f"PBR {pbr:.1f}배로 자산 대비 저평가. 이익 회복 신호 확인 필요."
+        return "가격 매력은 있으나 성장 촉매 확인 전까지 보조 후보."
 
     # 일반 fallback — 단기 실적이 약하면서 가격 매력도 약한 구간.
     # 와바바 가치성장 철학에 따라 중기 성장 흐름을 margin/ROE보다 먼저 반영.
     if sales_growth < 0 and growth < 0:
-        return "단기 실적이 약해진 구간으로 우선순위는 낮은 편입니다. 다음 재무 업데이트 후 재검토가 필요합니다."
+        if ig == "project":
+            return f"수주 인식 지연 가능성으로 매출·이익 동반 약화. 다음 재무 업데이트 후 재검토."
+        if ig == "defensive":
+            return "방어 업종임에도 단기 실적 동반 하락 중. 비용 구조 정상화 여부 점검 필요."
+        return f"매출·영업이익 동반 약화 구간. 다음 재무 업데이트 후 재검토가 필요합니다."
     if sales_cagr >= 8 or eps_growth >= 10:
-        return "단기 실적은 약하지만 중기 성장 흐름이 남아있어 다음 분기 추이를 함께 점검할 필요가 있습니다."
+        if sales_cagr >= 8 and eps_growth >= 10:
+            return (
+                f"단기 실적은 약하지만 3년 매출 CAGR {sales_cagr:.1f}%·EPS 성장률 {eps_growth:.1f}% 유지."
+                f" 다음 분기 추이 점검."
+            )
+        if sales_cagr >= 8:
+            return (
+                f"단기 실적은 약하지만 3년 매출 CAGR {sales_cagr:.1f}%로 중기 성장 흐름 확인."
+                f" 다음 분기 점검 필요."
+            )
+        return (
+            f"단기 실적은 약하지만 EPS 성장률 {eps_growth:.1f}%로 이익 체력 유지."
+            f" 다음 분기 추이 점검."
+        )
     if margin >= 12:
-        return "이익률은 양호한 편이지만 성장 촉매 확인 전까지는 비교 후보로 두는 편이 적절합니다."
+        return f"이익률 {margin:.1f}%로 양호하지만, 성장 촉매 확인 전까지는 비교 후보로 두는 편이 적절합니다."
     if roe >= 10:
         return "자본 효율은 유지되고 있어, 외형 회복 신호가 더 확인되면 매수 강도를 다시 점검할 수 있습니다."
     if news_score > 0:
-        return "뉴스 기반 모멘텀은 있으나 재무 확증이 더 필요해 정식 매수 후보보다 관찰 후보에 가깝습니다."
+        if ig == "project":
+            return "수주 관련 뉴스 모멘텀은 있으나 재무 수치 확인 전까지 관찰 후보에 가깝습니다."
+        if ig == "bio":
+            return "임상·파이프라인 뉴스 모멘텀은 있으나 매출 전환 확인 전까지 관찰 후보."
+        if ig == "tech":
+            return "업황 회복 기대 뉴스는 있으나 출하·수주 데이터로 재무 확인이 필요합니다."
+        if ig == "finance":
+            return "섹터 뉴스 모멘텀은 있으나 이익 체력 확인 전까지 관찰 후보에 가깝습니다."
+        return "뉴스 기반 모멘텀은 있으나 재무 확증이 더 필요해 관찰 후보에 가깝습니다."
     return "단기 모멘텀과 수익성 강도가 약해 비교 후보로 유지하고, 다음 업데이트에서 다시 점검하는 편이 적절합니다."
 
 
@@ -5440,8 +5508,19 @@ def build_daily_fund_memo(portfolio, fund_trade_result, auto_trade_pick, portfol
     }
 
 def main():
+    # --no-trade 또는 WABABA_DISABLE_AUTO_TRADE=1 이면 자동매매 스킵
+    # 문장 QA / 테스트 재생성 시 반드시 이 옵션으로 실행할 것:
+    #   python scripts\build_recommendation_history.py --no-trade
+    #   $env:WABABA_DISABLE_AUTO_TRADE="1"; python scripts\build_recommendation_history.py
+    no_trade_mode = (
+        "--no-trade" in sys.argv
+        or os.environ.get("WABABA_DISABLE_AUTO_TRADE", "").strip() == "1"
+    )
+
     print("추천 히스토리 생성 시작")
     print(f"시작 시간: {now_text()}")
+    if no_trade_mode:
+        print("[no-trade 모드] 자동매매 스킵 — portfolio/trade 파일 변경 없음")
 
     config = load_filter_config()
 
@@ -5764,12 +5843,20 @@ def main():
         fund_policy,
     )
 
-    portfolio, fund_trade_result = apply_wababa_fund_auto_trading(
-        portfolio,
-        auto_trade_pick,
-        today_map,
-        base_date,
-    )
+    if no_trade_mode:
+        fund_trade_result = {
+            "status": "NO_TRADE_MODE",
+            "message": "--no-trade 모드: 자동매매 스킵. portfolio 변경 없음.",
+            "orders": [],
+            "skipped": [{"action": "AUTO", "reason": "no-trade 모드"}],
+        }
+    else:
+        portfolio, fund_trade_result = apply_wababa_fund_auto_trading(
+            portfolio,
+            auto_trade_pick,
+            today_map,
+            base_date,
+        )
 
     if isinstance(fund_trade_result, dict):
         fund_trade_result["autoTradePick"] = {
@@ -5794,12 +5881,20 @@ def main():
     fund_policy = get_fund_policy(portfolio)
 
     ai_trade_picks = pick_wababa_ai_trade_candidates(all_wababa_candidates, ai_portfolio, ai_fund_policy)
-    ai_portfolio, ai_fund_trade_result = apply_wababa_ai_fund_auto_trading(
-        ai_portfolio,
-        ai_trade_picks,
-        today_map,
-        base_date,
-    )
+    if no_trade_mode:
+        ai_fund_trade_result = {
+            "status": "NO_TRADE_MODE",
+            "message": "--no-trade 모드: AI펀드 자동매매 스킵. portfolio 변경 없음.",
+            "orders": [],
+            "skipped": [{"action": "AUTO", "reason": "no-trade 모드"}],
+        }
+    else:
+        ai_portfolio, ai_fund_trade_result = apply_wababa_ai_fund_auto_trading(
+            ai_portfolio,
+            ai_trade_picks,
+            today_map,
+            base_date,
+        )
     ai_portfolio_map = build_portfolio_position_map(ai_portfolio)
     ai_portfolio_summary = build_portfolio_summary(ai_portfolio, ai_portfolio_map, today_map, previous_history.get("aiPortfolioSummary"))
     ai_performance_analysis = build_wababa_performance_analysis(ai_portfolio, ai_portfolio_summary, today_map, base_date)

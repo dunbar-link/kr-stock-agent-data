@@ -3418,6 +3418,13 @@ def build_decision_phrase(item):
             return f"PER {per:.1f}배로 저평가 구간이나 성장 촉매 확인 전까지 보조 후보."
         if 0 < pbr <= 0.7:
             return f"PBR {pbr:.1f}배로 자산 대비 저평가. 이익 회복 신호 확인 필요."
+        # Phase 26-A — general undervalued fallback을 배당·자본효율·마진으로 분기
+        if div_yield >= 3:
+            return f"배당수익률 {div_yield:.1f}%가 방어 요인이나, 이익 회복 신호 확인 전까지 관찰 후보 유지."
+        if roe >= 12 and growth >= 10:
+            return f"영업이익 {growth:.0f}% 증가와 자본 효율 유지가 확인되나, 추가 촉매 확인 후 재평가 단계."
+        if margin >= 10:
+            return f"이익률 {margin:.1f}% 수준의 수익성은 유지되나, 가격 매력만으로는 진입 결정에 추가 점검 필요."
         return "가격 매력은 있으나 성장 촉매 확인 전까지 보조 후보."
 
     # 일반 fallback — 단기 실적이 약하면서 가격 매력도 약한 구간.
@@ -3453,6 +3460,11 @@ def build_decision_phrase(item):
         if ig == "bio":
             return "임상·파이프라인 뉴스 모멘텀은 있으나 매출 전환 확인 전까지 관찰 후보."
         if ig == "tech":
+            # Phase 26-A — tech 뉴스 분기를 이익 흐름·외형 흐름으로 분기
+            if growth <= -10:
+                return f"업황 회복 기대 뉴스는 있으나 영업이익 {growth:.0f}% 감소 구간으로, 출하 회복 확인이 선행 변수입니다."
+            if sales_growth >= 5:
+                return "업황 회복 기대 뉴스와 외형 성장이 함께 확인되나, 마진 회복 신호가 다음 점검 변수입니다."
             return "업황 회복 기대 뉴스는 있으나 출하·수주 데이터로 재무 확인이 필요합니다."
         if ig == "finance":
             return "섹터 뉴스 모멘텀은 있으나 이익 체력 확인 전까지 관찰 후보에 가깝습니다."

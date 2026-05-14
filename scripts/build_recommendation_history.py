@@ -3146,11 +3146,87 @@ def build_valuation_phrase(item):
     if roe >= 10 and ig_fb == "bio":
         return "가격 지표만으로 매력 판단은 어렵고, 파이프라인 진행과 실적 반복성이 다음 점검 변수."
     if roe >= 10 and ig_fb == "finance":
-        return "가격 지표만으로 매력 판단은 어렵고, 자본 효율 유지 여부가 다음 점검 변수."
+        return f"PER {per:.1f}배·PBR {pbr:.1f}배 구간으로 자본 효율 유지 여부가 가격 정당화 핵심 변수."
     if roe >= 10 and ig_fb == "defensive":
         return "가격 지표만으로 매력 판단은 어렵고, 마진 안정과 배당 흐름이 다음 점검 변수."
     if div_yield >= 3:
         return f"가격 지표만으로 매력 판단은 어렵지만 배당수익률 {div_yield:.1f}%가 부분적 방어. 실적 흐름 점검 필요."
+
+    # Phase 24 — ROE<10 산업×지표 조합으로 final fallback 분산
+    # (P24-A) PER 데이터 결손 (per<=0, pbr>0)
+    if per <= 0 and pbr > 0:
+        if ig_fb == "tech":
+            return f"PER 데이터 결손, PBR {pbr:.1f}배 부담만 노출. 이익 지표 갱신 후 가격 매력 재평가 필요."
+        if ig_fb == "finance":
+            return f"PER 미수집·PBR {pbr:.1f}배 구간으로 자본 효율 데이터 보강 후 가격 판단 필요."
+        return f"PER 데이터 결손, PBR {pbr:.1f}배 부담 확인. 이익 지표 갱신 후 재평가 필요."
+
+    # (P24-B) 영업이익 큰 폭 감소
+    if growth <= -15:
+        if ig_fb == "tech":
+            return f"PER {per:.1f}배 부담에 영업이익 {growth:.1f}% 감소가 겹쳐, 출하·마진 회복이 정당화 변수."
+        if ig_fb == "project":
+            return f"PER {per:.1f}배 가격대에서 영업이익 {growth:.1f}% 감소세, 수주 인식 회복이 선행 변수."
+        if ig_fb == "defensive":
+            return f"영업이익 {growth:.1f}% 감소 구간으로 안정성보다 비용 구조 정상화가 우선 점검 변수."
+        if ig_fb == "finance":
+            return f"PER {per:.1f}배 부담 속 영업이익 {growth:.1f}% 감소, 자본 효율 회복 시점이 다음 변수."
+        return f"영업이익 {growth:.1f}% 감소가 가격 매력 판단을 가리며, 회복 시점 확인이 필요합니다."
+
+    # (P24-C) 이익 급증 + 가격 프리미엄 동반
+    if growth >= 50 and per > 30:
+        if ig_fb == "tech":
+            return f"PER {per:.1f}배 프리미엄을 영업이익 {growth:.0f}% 증가가 일부 흡수, 반복성과 출하 회복이 정당화 변수."
+        if ig_fb == "finance":
+            return f"PER {per:.1f}배 부담 속 이익 {growth:.0f}% 증가, 반복성 확인이 가격 정당화 핵심."
+        return f"PER {per:.1f}배 부담을 이익 {growth:.0f}% 증가가 일부 흡수, 일회성 여부 점검이 우선."
+
+    # (P24-D) 고 PER 일반 (per > 30, 이익 정체)
+    if per > 30:
+        if ig_fb == "tech":
+            return f"PER {per:.1f}배·PBR {pbr:.1f}배 프리미엄은 출하·마진 개선 확인 시에만 정당화 여지."
+        if ig_fb == "defensive":
+            return f"PER {per:.1f}배 부담은 안정 캐시 흐름만으로는 정당화 제한적, 마진 회복이 변수."
+        if ig_fb == "finance":
+            return f"PER {per:.1f}배는 자본 효율 대비 부담, ROE 회복 신호 확인 후 비교 적절."
+        if ig_fb == "project":
+            return f"PER {per:.1f}배 부담은 수주 인식 속도가 정당화하지 못하면 매력 제한적."
+        return f"PER {per:.1f}배 프리미엄은 실적 반등 확인 전까지 정당화 제한적."
+
+    # (P24-E) 마진 양호 + ROE 낮음
+    if margin >= 15:
+        if ig_fb == "tech":
+            return f"영업이익률 {margin:.1f}%는 양호하나 ROE {roe:.1f}%로 자기자본 재투자 효율이 다음 변수."
+        if ig_fb == "finance":
+            return f"이익률 {margin:.1f}%는 방어 요인이지만 ROE {roe:.1f}%로 자본 효율 회복 시점이 핵심."
+        return f"영업이익률 {margin:.1f}%는 양호하지만 ROE {roe:.1f}%로 가격 매력 정당화는 제한적."
+
+    # (P24-F) 매출 감소
+    if sales_growth <= -3:
+        if ig_fb == "defensive":
+            return f"매출 {sales_growth:.1f}% 감소 흐름이 가격 매력을 가리며, 비용 구조 정상화가 다음 변수."
+        if ig_fb == "tech":
+            return f"매출 {sales_growth:.1f}% 감소 구간으로 출하 회복 시점이 가격 매력 정당화 선행 변수."
+        return f"매출 {sales_growth:.1f}% 감소 구간으로 외형 회복 신호가 가격 매력 정당화 선행 변수."
+
+    # (P24-G) 매출 성장 양호 + ROE 낮음
+    if sales_growth >= 5 and per > 0:
+        if ig_fb == "tech":
+            return f"매출 {sales_growth:.1f}% 성장은 긍정적이나 PER {per:.1f}배 부담 흡수에 이익률 회복이 필요."
+        return f"매출 {sales_growth:.1f}% 성장은 받쳐주나 ROE {roe:.1f}%로 가격 매력 정당화에 시간 필요."
+
+    # (P24-H) 산업별 일반 fallback (ROE 낮음 + 위 조건 모두 비해당)
+    if ig_fb == "tech":
+        return f"PER {per:.1f}배·PBR {pbr:.1f}배 부담 속 ROE {roe:.1f}%로 가격 매력은 출하·마진 회복 후 재평가."
+    if ig_fb == "project":
+        return f"PER {per:.1f}배 가격대에서 수주 잔고 회복과 마진 정상화가 가격 매력 판단의 선행 변수."
+    if ig_fb == "bio":
+        return f"PER {per:.1f}배 부담은 파이프라인 진행과 매출 전환 확인 시점에 정당화 여부 결정."
+    if ig_fb == "finance":
+        return f"PER {per:.1f}배·PBR {pbr:.1f}배는 자본 효율 회복 시점에 따라 가격 매력 판단이 달라집니다."
+    if ig_fb == "defensive":
+        return f"PER {per:.1f}배 부담은 마진 안정과 비용 구조 정상화 확인 시 정당화 여지가 생깁니다."
+
     return "가격 지표만으로 저평가를 말하기는 어렵고, 실적 지속성과 추가 성장 신호 확인이 필요합니다."
 
 

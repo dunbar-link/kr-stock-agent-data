@@ -28,3 +28,6 @@ backup-before-phase*.json
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Claude Code local settings
+.claude/

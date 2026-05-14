@@ -4119,16 +4119,97 @@ def build_decision_engine_sentence(item):
     trigger = engine.get("buyTrigger") or ""
     label = engine.get("actionLabel") or "판단 보류"
     confidence = engine.get("confidence") or 0
+    action = engine.get("action") or ""
 
     blocker_clean = _strip_trailing_confirm(blocker)
 
-    if engine.get("action") == "BUY_NOW":
-        return f"{label}. 신뢰도 {confidence}%. {trigger}가 핵심 근거."
-    if engine.get("action") == "WATCH":
-        return f"{label}. 신뢰도 {confidence}%. {trigger}는 좋지만 {blocker_clean} 확인 필요."
-    if engine.get("action") == "HOLD":
-        return f"{label}. 신뢰도 {confidence}%. {blocker_clean} 확인 후 순위 비교."
-    return f"{label}. 신뢰도 {confidence}%. {blocker_clean} 때문에 매수 강도 낮음."
+    industry_name = item.get("industryName") if isinstance(item.get("industryName"), str) else ""
+    ig = classify_industry_group(industry_name)
+
+    # ── BUY_NOW ──────────────────────────────────────────────────────────────
+    if action == "BUY_NOW":
+        if "PER" in trigger or "밸류" in trigger:
+            body = f"신뢰도 {confidence}%. 가격 매력과 성장 지속성이 동시에 확인됨."
+        elif "동반 증가" in trigger or "성장" in trigger:
+            body = f"신뢰도 {confidence}%. 매출·이익 동반 성장이 지금 진입 근거."
+        else:
+            body = f"신뢰도 {confidence}%. {trigger}가 핵심 근거."
+        return f"{label}. {body}"
+
+    # ── WATCH ─────────────────────────────────────────────────────────────────
+    if action == "WATCH":
+        if blocker == "특별한 차단 요인은 작음":
+            if ig == "project":
+                detail = "수주 흐름 확인 시 진입 타이밍 포착 가능"
+            elif ig == "tech":
+                detail = "출하 지표 개선 확인 시 비중 확대 검토"
+            elif ig == "bio":
+                detail = "임상 결과 공개 시 모멘텀 확인 필요"
+            elif ig == "finance":
+                detail = "분기 실적과 배당 안정성 확인 후 진입 검토"
+            elif ig == "defensive":
+                detail = "가격 조정 시 방어적 진입 검토 가능"
+            else:
+                detail = "단기 트리거 확인 후 진입 타이밍 검토"
+            return f"{label}. {detail}."
+        return f"{label}. {trigger}는 긍정적이나 {blocker_clean} 점검 필요."
+
+    # ── HOLD ──────────────────────────────────────────────────────────────────
+    if action == "HOLD":
+        if blocker == "특별한 차단 요인은 작음":
+            if ig == "project":
+                detail = "수주 잔고와 원가율 점검 후 우선순위 비교"
+            elif ig == "tech":
+                detail = "출하 회복과 가동률 확인 후 비교"
+            elif ig == "bio":
+                detail = "파이프라인 일정과 매출 전환 여부 확인"
+            elif ig == "finance":
+                detail = "자본 효율과 충당금 부담 점검 후 비교"
+            elif ig == "defensive":
+                detail = "배당 방어력 확인 후 성장 촉매 점검"
+            else:
+                detail = "실적 지속성과 밸류 부담 함께 점검"
+            return f"{label}. {detail}."
+        if "PBR 부담" in blocker:
+            if ig == "tech":
+                detail = "밸류 프리미엄은 실적 모멘텀으로 정당화 여부 확인"
+            elif ig == "bio":
+                detail = "파이프라인 기대가 현 프리미엄을 정당화하는지 점검"
+            else:
+                detail = "밸류 프리미엄 정당화 여부 확인 후 비중 조정"
+            return f"{label}. {detail}."
+        if "매출 감소" in blocker:
+            if ig == "project":
+                detail = "수주 감소세와 실적 연결 여부 점검 선행"
+            else:
+                detail = "매출 감소 여부 점검 후 재진입 검토"
+            return f"{label}. {detail}."
+        if "수익성" in blocker or "마진" in blocker:
+            if ig == "project":
+                detail = "원가율 안정화와 이익 반등 여부 확인"
+            else:
+                detail = "마진 유지 여부 확인 후 보유 비중 판단"
+            return f"{label}. {detail}."
+        if "이익 급증" in blocker or "일회성" in blocker:
+            if ig == "bio":
+                detail = "임상 기술료 등 일회성 이익 반복성 점검"
+            else:
+                detail = "이익 급증의 반복성 확인 후 순위 비교"
+            return f"{label}. {detail}."
+        if "부채" in blocker or "레버리지" in blocker:
+            if ig == "finance":
+                detail = "부채비율과 자본 건전성 재확인 필요"
+            else:
+                detail = "재무 레버리지 점검 후 보유 비중 조정"
+            return f"{label}. {detail}."
+        return f"{label}. 신뢰도 {confidence}%. {blocker_clean} 점검 후 우선순위 비교."
+
+    # ── SKIP (기본) ───────────────────────────────────────────────────────────
+    if "부채" in blocker:
+        return f"{label}. 재무 부담 해소 확인 전 매수 강도 낮춤."
+    if "적자" in blocker or "이익 감소" in blocker:
+        return f"{label}. 수익성 회복 확인 전까지 관망 유지."
+    return f"{label}. {blocker_clean}으로 매수 강도 낮춤."
 
 
 

@@ -2997,9 +2997,13 @@ def build_business_impact_phrase(item):
     if growth >= 30 and margin >= 8:
         return f"이익 개선 강도가 높고, 이익률 {margin:.1f}% 수준에서 레버리지 효과가 지속될 수 있습니다." + c_note + s_note
     if margin >= 15:
-        if sales_growth >= 0:
-            return f"영업이익률 {margin:.1f}% 수준의 수익 구조에서는 매출 증가가 이익으로 빠르게 전환되는 특성이 있습니다." + c_note + s_note
-        return f"영업이익률 {margin:.1f}% 수준의 수익 구조가 유지되어 매출 감소 국면에서도 이익 체력 방어가 확인되는 구간입니다." + c_note + s_note
+        if sales_growth < 0:
+            return "수익성 기반이 두터운 구조가 유지되어 매출 감소 국면에서도 이익 체력 방어가 확인되는 구간입니다." + c_note + s_note
+        if roe >= 20:
+            return "수익성 기반이 두텁고 자본 효율도 함께 유지되어, 매출 증가가 이익으로 빠르게 전환되는 특성이 있습니다." + c_note + s_note
+        if roe >= 10:
+            return "수익성 기반이 두터운 구조에서 매출 증가가 이익으로 빠르게 전환되며, 자본 효율 유지 여부가 추세 점검 변수입니다." + c_note + s_note
+        return "수익성 기반이 두터운 구조에서 매출 증가가 이익으로 빠르게 전환되나, 자본 효율 회복 여부가 다음 점검 변수입니다." + c_note + s_note
 
     # 단기 실적 지표가 약해도 중기 성장성으로 보완
     if sales_cagr >= 8:

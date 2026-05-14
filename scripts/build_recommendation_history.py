@@ -2872,6 +2872,10 @@ def build_business_impact_phrase(item):
     margin = safe_number(item.get("ebitMargin"))
     sales_cagr = safe_number(item.get("salesCagr3Y"))
     eps_growth = safe_number(item.get("EPSGrowth3Y"))
+    roe = safe_number(item.get("roe"))
+    div_yield = safe_number(item.get("dividendYield"))
+    industry_name_bi = item.get("industryName") if isinstance(item.get("industryName"), str) else ""
+    ig_bi = classify_industry_group(industry_name_bi)
     warnings = build_quality_warnings(item)
 
     # 종목명 기반 업종 추정 (industryName이 비어있는 환경 보완)
@@ -2936,7 +2940,16 @@ def build_business_impact_phrase(item):
     if contains_any(theme, ["수주", "계약"]):
         if margin >= 8:
             return f"수주·계약 흐름이 향후 매출 인식으로 이어질 수 있고, 영업이익률 {margin:.1f}% 유지 시 수익성 확보 가능." + c_note + s_note
-        return "수주·계약은 향후 매출 인식으로 이어질 수 있고, 마진이 유지되면 영업이익 개선으로 연결." + c_note + s_note
+        # Phase 25 — 수주/계약 margin<8 구간을 업종 그룹과 이익 흐름으로 분기
+        if ig_bi == "project":
+            if growth < 0:
+                return "수주 잔고는 확인되나 단기 이익이 둔화된 구간으로, 원가율 정상화 시점이 다음 분기 관건입니다." + c_note + s_note
+            return "수주 잔고가 실적으로 전환되는 속도와 원가율 흐름이 매출 인식의 핵심 점검 변수입니다." + c_note + s_note
+        if ig_bi == "tech":
+            return "수주·계약 흐름은 매출 인식 기반이 되며, 가동률과 제품 믹스 개선이 이익률 회복의 추가 변수입니다." + c_note + s_note
+        if sales_growth >= 5:
+            return "수주·계약과 외형 성장이 함께 확인되는 흐름으로, 원가율 관리가 이익 전환의 핵심 변수입니다." + c_note + s_note
+        return "수주·계약은 매출 인식 기반이 되나, 마진 유지와 비용 구조 정상화가 이익 전환의 추가 변수입니다." + c_note + s_note
     if contains_any(theme, ["수출", "해외"]):
         if margin >= 8:
             return f"해외 매출 확대는 외형 성장에 직접 연결되고, 영업이익률 {margin:.1f}% 수준의 고마진 품목 비중이 높아지면 이익률 추가 개선 가능." + c_note + s_note
@@ -3000,17 +3013,36 @@ def build_business_impact_phrase(item):
     if is_finance_name:
         return "지주·금융 성격 업종에서는 이익의 반복성과 자산 대비 수익성이 핵심 점검 변수로, 추가 모멘텀보다 체력 유지 여부가 더 중요합니다." + c_note + s_note
     if sales_growth < 0 and growth < 0:
+        # Phase 25 — 외형·이익 동반 둔화 구간을 업종과 배당으로 분기
+        if ig_bi == "defensive":
+            if div_yield >= 1.5:
+                return "외형 둔화에도 배당 수준의 방어력은 유지되며, 비용 구조 정상화 시점이 다음 분기 관건입니다." + c_note + s_note
+            return "방어 업종 특성상 외형 둔화에도 비용 통제와 가격 전가력이 실적 회복의 핵심 변수입니다." + c_note + s_note
+        if ig_bi == "tech":
+            return "외형이 축소된 구간으로, 가동률 회복과 제품 믹스 개선 속도가 다음 분기 이익 회복의 핵심 변수입니다." + c_note + s_note
+        if ig_bi == "project":
+            return "외형·이익 둔화 구간으로, 수주 잔고와 원가율 흐름이 다음 분기 실적 회복 여부를 좌우합니다." + c_note + s_note
+        if div_yield >= 1.5:
+            return "외형 둔화 구간이나 배당이 일정 부분 방어 요인으로 작동하며, 비용 구조 정상화 시점 확인이 다음 점검 변수입니다." + c_note + s_note
         return "단기 외형이 정체된 상태로, 사업 부문별 회복 시점과 비용 구조 정상화 여부가 다음 분기 관건입니다." + c_note + s_note
 
-    # Phase 18 P2 — 기본 fallback을 industry_group으로 추가 분산
-    industry_name_bi = item.get("industryName") if isinstance(item.get("industryName"), str) else ""
-    ig_bi = classify_industry_group(industry_name_bi)
+    # Phase 25 — 기본 fallback을 업종 그룹·배당·ROE로 추가 분산
     if ig_bi == "tech":
         return "단기 모멘텀이 약한 구간으로, 매출 CAGR과 가동률 회복이 이익 레버리지 재가동의 핵심 점검 변수입니다." + c_note + s_note
     if ig_bi == "project":
         return "단기 모멘텀보다 수주 잔고와 원가율 흐름이 다음 분기 실적 변동성을 좌우할 핵심 점검 변수입니다." + c_note + s_note
     if ig_bi == "bio":
         return "단기 모멘텀보다 파이프라인 진행과 실적 반복성 확인이 우선 점검 변수로 작용하는 구간입니다." + c_note + s_note
+    if ig_bi == "finance":
+        return "자본 효율과 충당금 부담 흐름이 안정되면 이익 체력 회복으로 연결되며, 추가 모멘텀보다 ROE 유지가 우선 점검 변수입니다." + c_note + s_note
+    if ig_bi == "defensive":
+        if div_yield >= 1.5:
+            return "방어 업종 특성상 배당 방어력은 유지되나, 가격 전가력과 매출 회복 신호가 추가 확인되어야 이익 체력으로 연결됩니다." + c_note + s_note
+        return "방어 업종 특성상 비용 구조 안정성은 확보되어 있으나, 외형 회복 신호가 추가 확인되어야 추세 점검이 가능합니다." + c_note + s_note
+    if div_yield >= 2:
+        return "배당이 일정 부분 방어 요인으로 작동하고 있으나, 추가 성장 신호 없이는 보조 후보 유지 가능성이 큽니다." + c_note + s_note
+    if roe >= 10:
+        return "자본 효율은 유지되고 있으나, 매출과 이익이 동반 개선되는 신호가 추가 확인되어야 본진 진입 신뢰도가 올라갑니다." + c_note + s_note
     return "현재는 강한 단기 모멘텀보다 재무 체력과 가격 매력을 우선 점검할 단계입니다. 추가 실적 촉매 확인 전까지는 보조 후보로 유지될 가능성이 큽니다." + c_note + s_note
 
 

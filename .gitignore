@@ -31,3 +31,6 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+
+# QA / daily summary report outputs (regenerated each run)
+reports/

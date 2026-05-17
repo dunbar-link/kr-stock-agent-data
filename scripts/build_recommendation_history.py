@@ -67,6 +67,109 @@ def write_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+# Phase 31-C-Impl — 공개용 sanitize 사본 출력
+PUBLIC_DATA_PATH = Path("C:/work/kr-stock-agent/public/data/recommendation-history.json")
+
+_PUBLIC_TOP_ALLOW = {
+    "baseDate", "generatedAt",
+    "finalBestPick", "wababaPicks", "exploreGroups",
+    "aiFundTradeResult",
+    "portfolio", "aiPortfolio",
+    "portfolioSummary", "aiPortfolioSummary",
+    "performanceAnalysis", "aiPerformanceAnalysis",
+    "dailyFundMemo", "aiDailyFundMemo",
+    "holdingReview", "aiHoldingReview",
+}
+
+_PUBLIC_PORTFOLIO_ALLOW = {"initialCapital", "cash", "realizedProfit", "positions"}
+_PUBLIC_POSITION_ALLOW = {"code", "name", "buyPrice", "quantity"}
+_PUBLIC_AI_TRADE_RESULT_ALLOW = {"aiTradePicks"}
+
+# 종목 객체에서 제거할 키 (UI 미사용 + 노출 비권장)
+_PUBLIC_STOCK_DENY = {
+    "agentReport", "naturalReport", "qualityWarnings",
+    "evidence", "evidenceSummary", "news",
+}
+
+
+def _sanitize_stock_for_public(stock):
+    if not isinstance(stock, dict):
+        return stock
+    return {k: v for k, v in stock.items() if k not in _PUBLIC_STOCK_DENY}
+
+
+def _sanitize_portfolio_for_public(portfolio):
+    if not isinstance(portfolio, dict):
+        return {}
+    out = {k: v for k, v in portfolio.items() if k in _PUBLIC_PORTFOLIO_ALLOW}
+    positions = out.get("positions")
+    if isinstance(positions, list):
+        out["positions"] = [
+            {k: v for k, v in p.items() if k in _PUBLIC_POSITION_ALLOW}
+            for p in positions
+            if isinstance(p, dict)
+        ]
+    return out
+
+
+def _sanitize_ai_trade_result_for_public(result):
+    if not isinstance(result, dict):
+        return {}
+    out = {k: v for k, v in result.items() if k in _PUBLIC_AI_TRADE_RESULT_ALLOW}
+    picks = out.get("aiTradePicks")
+    if isinstance(picks, list):
+        out["aiTradePicks"] = [_sanitize_stock_for_public(p) for p in picks]
+    return out
+
+
+def _sanitize_explore_groups_for_public(groups):
+    if not isinstance(groups, dict):
+        return {}
+    out = {}
+    for key, items in groups.items():
+        if isinstance(items, list):
+            out[key] = [_sanitize_stock_for_public(it) for it in items]
+        else:
+            out[key] = items
+    return out
+
+
+def sanitize_recommendation_history_for_public(data):
+    """공개용 sanitize 사본 생성. 원본 data는 변경하지 않는다."""
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for key in data.keys():
+        if key not in _PUBLIC_TOP_ALLOW:
+            continue
+        value = data[key]
+        if key == "portfolio" or key == "aiPortfolio":
+            out[key] = _sanitize_portfolio_for_public(value)
+        elif key == "aiFundTradeResult":
+            out[key] = _sanitize_ai_trade_result_for_public(value)
+        elif key == "exploreGroups":
+            out[key] = _sanitize_explore_groups_for_public(value)
+        elif key == "wababaPicks":
+            if isinstance(value, list):
+                out[key] = [_sanitize_stock_for_public(s) for s in value]
+            else:
+                out[key] = value
+        elif key == "finalBestPick":
+            out[key] = _sanitize_stock_for_public(value)
+        else:
+            out[key] = value
+    return out
+
+
+def write_public_recommendation_history(data):
+    """webapp public/data 디렉터리가 있으면 sanitize 사본을 그곳에 저장."""
+    if not PUBLIC_DATA_PATH.parent.exists():
+        print(f"skipped public sanitize (parent missing): {PUBLIC_DATA_PATH.parent}")
+        return
+    public_data = sanitize_recommendation_history_for_public(data)
+    write_json(PUBLIC_DATA_PATH, public_data)
+    print(f"written (public sanitized): {PUBLIC_DATA_PATH}")
+
 
 def normalize_trade_history_record(entry):
     if not isinstance(entry, dict):
@@ -6184,6 +6287,7 @@ def main():
     }
 
     write_json(RECOMMENDATION_HISTORY_PATH, result)
+    write_public_recommendation_history(result)
 
     print(f"written: {RECOMMENDATION_HISTORY_PATH}")
     print(f"baseDate: {base_date}")

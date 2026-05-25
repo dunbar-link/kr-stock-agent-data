@@ -2612,6 +2612,7 @@ def calculate_final_best_score(item):
         + valuation_bonus
         + size_stability_bonus
         + calculate_growth_consistency_score(item) * 0.35
+        + calculate_sector_durability_score(item) * 0.18
         - quality_penalty
     )
 
@@ -4087,6 +4088,11 @@ def calculate_growth_consistency_score(item):
     elif quality_penalty <= 10:
         score += 4
 
+    # Phase 36-A: 흑자전환/기저효과 의심 — 영업이익이 매출 동행 없이 단독 급증
+    # (이미 quality_penalty 의 "growth>=300 + sales<20" 35점 패널티 직전 구간을 보완)
+    if op_growth >= 200 and sales_growth < 5:
+        score -= 10
+
     return max(0, min(100, round(score)))
 
 
@@ -4157,6 +4163,158 @@ def build_long_term_hold_view(item):
         return f"{label}: 이익 증가의 반복성 확인 필요"
     return f"{label}: 일회성 성장 가능성 우선 점검"
 
+
+# ----- 산업 지속성 (Sector Durability) ---------------------------------------
+# Phase 36-A: industryName 정확매칭으로 베이스라인을 정하고,
+# hypothesis/news/themes 텍스트는 +5~+10 보조 가산만 부여한다.
+# 텍스트만으로 베이스라인이 흔들리지 않도록 두 단계를 분리한다.
+
+_SECTOR_DURABILITY_BASELINE = {
+    # 구조적 장기 성장 (2~3년+ 가시성)
+    75: ("반도체", "의약품", "제약", "의료·정밀기기"),
+    # 기술 서비스 / 전자
+    65: ("전기·전자", "IT 서비스"),
+    # 중기 회복·사이클 (운송장비·조선·방산, 기계·전력설비, 소재)
+    60: ("운송장비·부품", "기계·장비", "화학", "비철금속", "철강·금속"),
+    # 안정 수요
+    50: (
+        "음식료·담배", "식료품", "유통", "도소매",
+        "통신", "통신업",
+        "전기·가스", "전기·가스·수도", "가스",
+        "금융", "은행", "증권", "보험", "기타금융", "캐피탈",
+        "서비스업",
+    ),
+    # 단기 회복·사이클 약함
+    45: ("건설", "건설업", "섬유·의복", "운수창고", "종이·목재"),
+}
+
+_SECTOR_TEXT_BONUS_RULES = (
+    # (가산점, 라벨, 키워드 목록)
+    (10, "조선·해양 업황", ("조선", "선박", "해양", "LNG")),
+    (10, "방산·국방 수요", ("방산", "방위", "국방")),
+    (8,  "AI·반도체 수요", ("AI", "반도체", "HBM", "데이터센터")),
+    (8,  "전력 인프라 투자", ("전력", "변압", "송전", "배전")),
+    (5,  "K콘텐츠·엔터", ("콘텐츠", "K팝", "엔터", "한류")),
+    (5,  "EV·배터리",     ("EV", "배터리", "2차전지")),
+)
+
+
+def _sector_durability_baseline_by_name(industry_name):
+    """industryName 정확매칭 — 매칭 실패 시 (None, None)."""
+    if not isinstance(industry_name, str) or not industry_name:
+        return None, None
+    for baseline, names in _SECTOR_DURABILITY_BASELINE.items():
+        if industry_name in names:
+            return baseline, industry_name
+    return None, None
+
+
+def _sector_text_signals(item):
+    """hypothesis/news/themes 텍스트에서 보조 가산 키워드 매치 결과."""
+    parts = []
+    for key in ("hypothesis", "companySummary", "investmentThesis", "industryMomentum",
+                "growthCatalyst", "agentReport", "naturalReport"):
+        value = item.get(key) if isinstance(item, dict) else ""
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+    news = item.get("news") if isinstance(item, dict) else None
+    if isinstance(news, dict):
+        for key in ("hypothesis", "outlook6M", "entrySignal"):
+            value = news.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+        themes = news.get("themes")
+        if isinstance(themes, list):
+            for value in themes:
+                if isinstance(value, str) and value.strip():
+                    parts.append(value)
+    combined = " ".join(parts)
+    hits = []
+    for bonus, label, keywords in _SECTOR_TEXT_BONUS_RULES:
+        if any(keyword in combined for keyword in keywords):
+            hits.append((bonus, label))
+    return hits
+
+
+def calculate_sector_durability_score(item):
+    """산업 지속성 점수(0~100).
+
+    1) industryName 정확매칭 → 베이스라인 (75/65/60/50/45).
+    2) 매칭 실패 → 35 (미분류).
+    3) 텍스트 키워드는 +5~+10 보조 가산만 (베이스라인 변경 불가).
+    4) 수출/수주/신사업/매출 CAGR/뉴스 모멘텀 보정.
+    """
+    if not isinstance(item, dict):
+        return 0
+    industry_name = str(item.get("industryName") or "").strip()
+    baseline, _matched = _sector_durability_baseline_by_name(industry_name)
+    if baseline is None:
+        baseline = 35
+
+    score = baseline
+
+    for bonus, _label in _sector_text_signals(item):
+        score += bonus
+
+    tags = detect_growth_signal_tags(item)
+    has_export = "수출" in tags
+    has_order = "수주" in tags
+    has_new = "신사업" in tags
+    if has_export:
+        score += 5
+    if has_order:
+        score += 5
+    if has_export and has_order:
+        score += 5
+    if has_new:
+        score += 3
+
+    sales_cagr = safe_number(item.get("salesCagr3Y"))
+    if sales_cagr >= 10:
+        score += 5
+
+    news_score = safe_number(item.get("newsScore"))
+    if news_score <= -20:
+        score -= 10
+
+    return max(0, min(100, round(score)))
+
+
+def classify_sector_durability(score):
+    number = safe_number(score)
+    if number >= 75:
+        return "구조적 성장 산업"
+    if number >= 60:
+        return "회복 사이클"
+    if number >= 45:
+        return "안정 수요"
+    return "단기 테마"
+
+
+def build_sector_durability_reasons(item):
+    score = calculate_sector_durability_score(item)
+    label = classify_sector_durability(score)
+    reasons = [f"{label} · {score}점"]
+    industry_name = str(item.get("industryName") or "").strip()
+    baseline, _matched = _sector_durability_baseline_by_name(industry_name)
+    if baseline is not None and industry_name:
+        reasons.append(f"산업 {industry_name} (기본 {baseline}점)")
+    elif industry_name:
+        reasons.append(f"산업 {industry_name} (분류 외, 기본 35점)")
+    text_hits = _sector_text_signals(item)
+    if text_hits:
+        labels = [hit_label for _bonus, hit_label in text_hits[:2]]
+        reasons.append("키워드 보조: " + ", ".join(labels))
+    sales_cagr = safe_number(item.get("salesCagr3Y"))
+    if sales_cagr >= 10:
+        reasons.append(f"3년 매출 CAGR {sales_cagr:.1f}% — 산업 수요가 매출로 이어짐")
+    news_score = safe_number(item.get("newsScore"))
+    if news_score <= -20:
+        reasons.append("부정 뉴스 모멘텀 차감 적용")
+    return reasons[:5]
+# -----------------------------------------------------------------------------
+
+
 def build_growth_story(item):
     tailwind = infer_industry_tailwind(item)
     catalysts = build_core_catalyst(item)
@@ -4189,6 +4347,10 @@ def build_growth_story(item):
 
 def attach_wababa_value_reasons(item, position=None):
     growth_story = build_growth_story(item)
+    growth_consistency_score = calculate_growth_consistency_score(item)
+    growth_consistency_label = classify_growth_consistency(growth_consistency_score)
+    sector_durability_score = calculate_sector_durability_score(item)
+    sector_durability_label = classify_sector_durability(sector_durability_score)
     return {
         **item,
         "growthSignalTags": detect_growth_signal_tags(item),
@@ -4197,9 +4359,16 @@ def attach_wababa_value_reasons(item, position=None):
         "industryTailwind": growth_story.get("tailwind"),
         "coreCatalyst": growth_story.get("catalysts"),
         "growthThesis": growth_story.get("thesis"),
-        "growthConsistencyScore": calculate_growth_consistency_score(item),
-        "growthConsistencyLabel": classify_growth_consistency(calculate_growth_consistency_score(item)),
+        "growthConsistencyScore": growth_consistency_score,
+        "growthConsistencyLabel": growth_consistency_label,
         "growthConsistencyReasons": build_growth_consistency_reasons(item),
+        # Phase 36-A: growthDurability* = growthConsistency* alias (하위 호환 유지)
+        "growthDurabilityScore": growth_consistency_score,
+        "growthDurabilityLabel": growth_consistency_label,
+        # Phase 36-A: 산업 지속성 (industryName 우선, 텍스트는 보조 가산만)
+        "sectorDurabilityScore": sector_durability_score,
+        "sectorDurabilityLabel": sector_durability_label,
+        "sectorDurabilityReasons": build_sector_durability_reasons(item),
         "longTermHoldView": build_long_term_hold_view(item),
         "valueBuyPassed": is_wababa_value_buy_candidate(item),
         "buyReason": build_buy_reason(item),
@@ -5270,6 +5439,7 @@ def pick_auto_trade_candidate(final_best_pick, wababa_picks, explore_groups, por
             safe_number(item.get("todayPickScore") or item.get("finalBestScore")) * 1.0
             + safe_number(item.get("growthSignalScore")) * 8
             + safe_number(item.get("growthConsistencyScore") or calculate_growth_consistency_score(item)) * 1.4
+            + safe_number(item.get("sectorDurabilityScore") or calculate_sector_durability_score(item)) * 0.15
             + confidence * 1.2
             + safe_number(item.get("roe")) * 0.8
             - max(0, safe_number(item.get("per")) - 10) * 1.5
@@ -5319,6 +5489,8 @@ def calculate_ai_fund_score(item):
     elif pbr <= 2:
         valuation_bonus += 5
 
+    sector_durability = safe_number(item.get("sectorDurabilityScore") or calculate_sector_durability_score(item))
+
     return round(
         financial * 0.7
         + roe * 1.5
@@ -5327,6 +5499,7 @@ def calculate_ai_fund_score(item):
         + sales_growth * 0.45
         + news * 2.2
         + consistency * 1.15
+        + sector_durability * 0.15
         + growth_signal * 9
         + valuation_bonus
         - quality_penalty * 1.8,

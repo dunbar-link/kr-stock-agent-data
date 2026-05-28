@@ -173,6 +173,20 @@ def main() -> None:
         for step in STEPS:
             run_step(step["name"], step["file"])
 
+        # Phase 37-A11 — Portfolio Snapshot Persistence.
+        # 실패해도 daily_run 자체 실패로 전이되지 않도록 try/except로 격리한다.
+        # snapshot은 recommendation-history.json을 read-only로 읽어
+        # data/portfolio-state-snapshots.json에 별도 append/update 한다.
+        try:
+            run_step(
+                "5. 포트폴리오 상태 스냅샷 누적",
+                "build_portfolio_state_snapshot.py",
+            )
+        except Exception as snapshot_error:  # noqa: BLE001
+            print("")
+            print("[WARN] 포트폴리오 스냅샷 단계 실패 — daily_run은 계속 진행합니다.")
+            print(f"[WARN] 사유: {snapshot_error}")
+
         finished_at = datetime.now()
 
         summary = build_summary(

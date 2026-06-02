@@ -91,6 +91,12 @@ _PUBLIC_STOCK_DENY = {
     "evidence", "evidenceSummary", "news",
 }
 
+# 공개 payload 어디에서든 제거할 내부 경로성 key (운영 PC 절대경로 노출 방지).
+# 정확한 key명만 지정해 과도한 제거를 피한다. (Phase 41-B)
+_PUBLIC_DROP_KEYS_ANYWHERE = {
+    "tradeHistoryPath",
+}
+
 
 def _sanitize_stock_for_public(stock):
     if not isinstance(stock, dict):
@@ -134,6 +140,19 @@ def _sanitize_explore_groups_for_public(groups):
     return out
 
 
+def _drop_internal_keys_for_public(value):
+    """공개 payload에서 내부 경로성 key를 재귀 제거(원본 비변경, 복사본 반환)."""
+    if isinstance(value, dict):
+        return {
+            k: _drop_internal_keys_for_public(v)
+            for k, v in value.items()
+            if k not in _PUBLIC_DROP_KEYS_ANYWHERE
+        }
+    if isinstance(value, list):
+        return [_drop_internal_keys_for_public(v) for v in value]
+    return value
+
+
 def sanitize_recommendation_history_for_public(data):
     """공개용 sanitize 사본 생성. 원본 data는 변경하지 않는다."""
     if not isinstance(data, dict):
@@ -158,7 +177,8 @@ def sanitize_recommendation_history_for_public(data):
             out[key] = _sanitize_stock_for_public(value)
         else:
             out[key] = value
-    return out
+    # 내부 경로성 key(tradeHistoryPath 등) 전역 제거. top-level 구조는 유지된다.
+    return _drop_internal_keys_for_public(out)
 
 
 def write_public_recommendation_history(data):

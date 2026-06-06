@@ -1,0 +1,71 @@
+{
+  "fundName": "와바바 마법공식 펀드",
+  "updatedAt": "2026-06-06 21:18:48",
+  "entries": [
+    {
+      "date": "2026-06-06",
+      "changeType": "formula_metadata",
+      "formulaMode": "approx",
+      "formulaVersion": "approx-roe-per-2026-43B3",
+      "tradingRuleVersion": "magic-50td-start-open-top10-v1",
+      "description": "approx 공식(ROE/PER) 명시 + formulaMode/version 메타 도입",
+      "reason": "근사 공식임을 내부 데이터에 박제",
+      "expectedImpact": "표기만, 계산 동일",
+      "backwardCompatibility": "유지",
+      "publicImpact": "없음",
+      "operatorNote": "Phase 43-B3"
+    },
+    {
+      "date": "2026-06-06",
+      "changeType": "formula_upgrade",
+      "formulaMode": "book_faithful_v1",
+      "formulaVersion": "book-faithful-v1-2026-43B4",
+      "tradingRuleVersion": "magic-50td-start-open-top10-v1",
+      "description": "DART 기반 ROC/EarningsYield 원전 근사 공식 도입(기본 모드 전환)",
+      "reason": "그린블라트 원전에 근접",
+      "expectedImpact": "top10 대폭 변동(approx 대비 9/10 상이)",
+      "backwardCompatibility": "approx는 비교용 유지",
+      "publicImpact": "없음",
+      "operatorNote": "Phase 43-B4"
+    },
+    {
+      "date": "2026-06-06",
+      "changeType": "data_unit_fix",
+      "formulaMode": "book_faithful_v1",
+      "formulaVersion": "book-faithful-v1-2026-43B5",
+      "tradingRuleVersion": "magic-50td-start-open-top10-v1",
+      "description": "marketCap 단위를 억원(×1e8)로 확정(이전 ×1e6 오류 정정)",
+      "reason": "EV 100배 과소 → EarningsYield 100배 과대(EY>1) 해소",
+      "expectedImpact": "EY median 3.1%로 정상화, EY>1=0, top10 재편(EV 큰 종목 하락)",
+      "backwardCompatibility": "공식 정의 동일, 입력 단위만 정정",
+      "publicImpact": "없음",
+      "operatorNote": "Phase 43-B5"
+    },
+    {
+      "date": "2026-06-06",
+      "changeType": "trading_rule_lock",
+      "formulaMode": "book_faithful_v1",
+      "formulaVersion": "book-faithful-v1-2026-43B5",
+      "tradingRuleVersion": "magic-50td-start-open-top10-v1",
+      "description": "매일 top10·시작가 매수/매도·50거래일 보유·lot 분리 규칙 고정",
+      "reason": "운용 규칙 동결로 성과 비교 기준 확립",
+      "expectedImpact": "운용 동일",
+      "backwardCompatibility": "유지",
+      "publicImpact": "없음",
+      "operatorNote": "대장 기준"
+    },
+    {
+      "date": "2026-06-06",
+      "changeType": "operational_stabilization",
+      "formulaMode": "book_faithful_v1",
+      "formulaVersion": "book-faithful-v1-2026-43B5",
+      "tradingRuleVersion": "magic-50td-start-open-top10-v1",
+      "description": "version lock + operation-log + change-log + 공식수정 가드(sanityWarning) 도입",
+      "reason": "공식 수정과 운용 성과 분리, 재현성/회귀분석 확보",
+      "expectedImpact": "계산 무변경, 운영기록만 안정화",
+      "backwardCompatibility": "유지",
+      "publicImpact": "없음(public 미반영)",
+      "operatorNote": "Phase 43-B6"
+    }
+  ]
+}

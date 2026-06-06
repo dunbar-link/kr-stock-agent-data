@@ -79,6 +79,9 @@ _PUBLIC_TOP_ALLOW = {
     "performanceAnalysis", "aiPerformanceAnalysis",
     "dailyFundMemo", "aiDailyFundMemo",
     "holdingReview", "aiHoldingReview",
+    # Phase 43-C: 마법공식 펀드 공개 최소 요약(내부 순위/로그/lot 원장은 미노출)
+    "magicPortfolio", "magicPortfolioSummary", "magicRecentActions",
+    "magicFundPolicy", "magicFormula",
 }
 
 _PUBLIC_PORTFOLIO_ALLOW = {"initialCapital", "cash", "realizedProfit", "positions"}
@@ -181,12 +184,137 @@ def sanitize_recommendation_history_for_public(data):
     return _drop_internal_keys_for_public(out)
 
 
+# Phase 43-C: 마법공식 펀드 내부 JSON -> 공개 최소 요약 5키
+MAGIC_PORTFOLIO_PATH = ROOT_DIR / "magic-formula-portfolio.json"
+MAGIC_ACTIONS_PATH = ROOT_DIR / "magic-formula-daily-actions.json"
+MAGIC_RANKINGS_PATH = ROOT_DIR / "magic-formula-rankings.json"
+MAGIC_LOTS_PATH = ROOT_DIR / "magic-formula-trade-lots.json"
+
+
+def build_magic_public_summary():
+    """마법공식 내부 JSON에서 공개용 최소 요약(5키)을 생성한다.
+    전체 순위/operation log/lot 원장/raw 계산값은 절대 포함하지 않는다.
+    내부 파일이 없으면 빈 dict를 반환(기존 2펀드 출력에 영향 없음)."""
+    pf = read_json(MAGIC_PORTFOLIO_PATH)
+    if not isinstance(pf, dict):
+        return {}
+    actions = read_json(MAGIC_ACTIONS_PATH) or {}
+    rankings = read_json(MAGIC_RANKINGS_PATH) or {}
+    lots_doc = read_json(MAGIC_LOTS_PATH) or {}
+
+    def _n(v):
+        return v if isinstance(v, (int, float)) else 0
+
+    # 보유 종목별 최초 매수일 / 다음 매도 예정일(요약 2개 값만, lot 원장 미노출)
+    oldest = {}
+    for lot in (lots_doc.get("lots") or []):
+        if lot.get("status") != "OPEN":
+            continue
+        code = lot.get("code")
+        prev = oldest.get(code)
+        if prev is None or str(lot.get("buyDate")) < str(prev.get("buyDate")):
+            oldest[code] = {"buyDate": lot.get("buyDate"), "nextSell": lot.get("plannedSellDateEstimate")}
+
+    initial = _n(pf.get("initialCapital")) or 50000000
+    cash = _n(pf.get("cash"))
+    invested = _n(pf.get("investedAmount"))
+    evaluation = _n(pf.get("evaluationAmount"))
+    unreal = _n(pf.get("unrealizedProfit"))
+    realized = _n(pf.get("totalRealizedProfit"))
+    total_asset = _n(pf.get("totalAssetApprox")) or round(cash + evaluation, 2)
+    total_profit = round(realized + unreal, 2)
+    return_rate = round((total_asset - initial) / initial * 100, 2) if initial else 0.0
+
+    holdings = []
+    for p in (pf.get("positionsByCode") or []):
+        code = p.get("code")
+        inv = _n(p.get("totalInvested"))
+        prof = p.get("evalProfit")
+        holdings.append({
+            "code": code, "name": p.get("name"), "quantity": p.get("totalQuantity"),
+            "averageBuyPrice": p.get("avgBuyPrice"), "evaluationPrice": p.get("currentPrice"),
+            "investedAmount": inv, "evaluationAmount": p.get("evaluationAmount"),
+            "unrealizedProfit": prof,
+            "unrealizedReturnRate": round(_n(prof) / inv * 100, 2) if (prof is not None and inv) else None,
+            "lotCount": p.get("lotCount"),
+            "oldestBuyDate": oldest.get(code, {}).get("buyDate"),
+            "nextSellDateEstimate": oldest.get(code, {}).get("nextSell"),
+        })
+
+    formula = pf.get("formula") or {}
+    fmode = formula.get("formulaMode") or rankings.get("formulaMode")
+    fver = formula.get("formulaVersion") or rankings.get("formulaVersion")
+    trv = formula.get("tradingRuleVersion") or rankings.get("tradingRuleVersion")
+    data_date = pf.get("baseDate") or rankings.get("baseDate")
+    today = actions.get("today") or {}
+    sell_amt = round(sum(_n(s.get("sellOpenPrice")) * _n(s.get("quantity"))
+                         for s in (today.get("todaySellList") or [])), 2)
+    top3 = [{"rank": s.get("rank"), "code": s.get("code"), "name": s.get("name")}
+            for s in (rankings.get("todayMagicRankingTop10") or [])[:3]]
+    msg = ("휴장일에는 신규 매수·매도를 하지 않습니다. (마법공식 순위는 매일 산출)"
+           if today.get("marketClosed")
+           else "오늘 마법공식 상위 10개 종목을 시작가 기준으로 운용했습니다.")
+
+    return {
+        "magicPortfolio": {
+            "holdings": holdings, "cash": cash, "totalAsset": total_asset,
+            "investedAmount": invested, "evaluationAmount": evaluation,
+            "unrealizedProfit": unreal, "realizedProfit": realized, "returnRate": return_rate,
+            "openLotCount": pf.get("openLotCount", 0), "updatedAt": pf.get("updatedAt"),
+        },
+        "magicPortfolioSummary": {
+            "fundName": "와바바 마법공식 펀드", "initialCapital": initial, "totalAsset": total_asset,
+            "cash": cash, "investedAmount": invested, "evaluationAmount": evaluation,
+            "realizedProfit": realized, "unrealizedProfit": unreal, "totalProfit": total_profit,
+            "totalReturnRate": return_rate, "holdingCount": len(holdings),
+            "openLotCount": pf.get("openLotCount", 0), "formulaMode": fmode, "formulaVersion": fver,
+            "tradingRuleVersion": trv, "dataDate": data_date, "generatedAt": pf.get("updatedAt"),
+        },
+        "magicRecentActions": {
+            "date": data_date, "marketOpen": today.get("marketOpen"),
+            "skippedReason": today.get("skippedReason"), "buyCount": today.get("buyCount", 0),
+            "sellCount": today.get("sellCount", 0), "executedBuyAmount": today.get("buyInvestedTotal", 0),
+            "executedSellAmount": sell_amt, "top10Preview": top3, "message": msg,
+        },
+        "magicFundPolicy": {
+            "title": "와바바 마법공식 펀드",
+            "shortDescription": ("수익성이 좋은 회사를 싼 가격에 사는 정량 규칙을 한국시장 데이터로 검증하는 펀드입니다. "
+                                 "매일 상위 10개 종목을 시작가로 매수하고, 각 매수분은 실거래일 50일 후 시작가로 기계적으로 매도합니다."),
+            "rules": [
+                "매일 한국 상장사를 마법공식 기준으로 순위화합니다.",
+                "상위 10개 종목만 매수 후보로 삼습니다.",
+                "총 자산 5,000만원을 50거래일로 나눠 하루 약 100만원을 집행합니다.",
+                "각 종목은 약 10만원 이내로 매수합니다.",
+                "모든 매수와 매도 기준가는 당일 시작가입니다.",
+                "각 매수분은 실거래일 50일 동안 보유합니다.",
+                "50거래일 후에는 수익/손실과 무관하게 매도합니다.",
+                "같은 종목이 여전히 상위 10위 안에 있으면 매도 후 다시 신규 매수합니다.",
+                "공식 변경 시 formulaVersion을 올리고 변경 로그에 기록합니다.",
+            ],
+            "disclosure": [
+                "이 펀드는 투자 권유가 아니라 공개 검증용 운용 기록입니다.",
+                "전체 순위와 세부 계산 로그는 운영 검증용으로 별도 보관합니다.",
+            ],
+        },
+        "magicFormula": {
+            "formulaMode": fmode, "formulaVersion": fver, "tradingRuleVersion": trv,
+            "evMethod": rankings.get("evMethod") or formula.get("evMethod"),
+            "marketCapUnitAssumption": rankings.get("marketCapUnitAssumption") or formula.get("marketCapUnitAssumption"),
+            "lockedAt": formula.get("formulaVersionLockedAt") or rankings.get("formulaVersionLockedAt"),
+            "publicFormulaDescription": ("좋은 회사(자본 대비 영업이익이 큰 회사)를 싼 값(기업가치 대비 영업이익이 큰 회사)에 "
+                                         "사는 정량 공식을 한국시장 데이터로 적용합니다."),
+        },
+    }
+
+
 def write_public_recommendation_history(data):
     """webapp public/data 디렉터리가 있으면 sanitize 사본을 그곳에 저장."""
     if not PUBLIC_DATA_PATH.parent.exists():
         print(f"skipped public sanitize (parent missing): {PUBLIC_DATA_PATH.parent}")
         return
-    public_data = sanitize_recommendation_history_for_public(data)
+    enriched = dict(data) if isinstance(data, dict) else {}
+    enriched.update(build_magic_public_summary())  # 마법공식 공개 최소 요약 5키 병합(allowlist 통과)
+    public_data = sanitize_recommendation_history_for_public(enriched)
     write_json(PUBLIC_DATA_PATH, public_data)
     print(f"written (public sanitized): {PUBLIC_DATA_PATH}")
 

@@ -18,6 +18,9 @@ DAILY_RUN_SUMMARY_PATH = ROOT_DIR / "daily-run-summary.json"
 STEPS = [
     {"name": "1. 시장 재무 데이터 생성", "file": "build_market_snapshot_fast.py"},
     {"name": "2. 뉴스 모멘텀 생성", "file": "build_news_momentum_sample.py"},
+    # Phase 43-D: 마법공식 펀드 내부 갱신(추천 이력 생성 전). 보조 단계라 실패해도
+    # 2펀드 흐름은 계속 진행하되(isolate) WARN으로 명확히 보고한다.
+    {"name": "2.5 마법공식 펀드 내부 갱신", "file": "build_magic_formula_fund.py", "isolate": True},
     {"name": "3. 추천 이력 생성", "file": "build_recommendation_history.py"},
     {"name": "4. 일일 투자 판단 리포트 생성", "file": "build_daily_report.py"},
 ]
@@ -171,7 +174,16 @@ def main() -> None:
 
     try:
         for step in STEPS:
-            run_step(step["name"], step["file"])
+            if step.get("isolate"):
+                # 보조 단계(마법공식 등): 실패해도 daily_run/2펀드 흐름을 중단하지 않고 WARN.
+                try:
+                    run_step(step["name"], step["file"])
+                except Exception as step_error:  # noqa: BLE001
+                    print("")
+                    print(f"[WARN] {step['name']} 실패 — daily_run은 계속 진행합니다.")
+                    print(f"[WARN] 사유: {step_error}")
+            else:
+                run_step(step["name"], step["file"])
 
         # Phase 37-A11 — Portfolio Snapshot Persistence.
         # 실패해도 daily_run 자체 실패로 전이되지 않도록 try/except로 격리한다.

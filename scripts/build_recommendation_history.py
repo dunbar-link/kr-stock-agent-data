@@ -206,14 +206,27 @@ def build_magic_public_summary():
         return v if isinstance(v, (int, float)) else 0
 
     # 보유 종목별 최초 매수일 / 다음 매도 예정일(요약 2개 값만, lot 원장 미노출)
+    # + 매수시점 마법공식 순위(buyRank) = 최초 OPEN lot 의 rank. [Phase 45-C, additive]
     oldest = {}
+    buy_rank_by_code = {}
     for lot in (lots_doc.get("lots") or []):
         if lot.get("status") != "OPEN":
             continue
         code = lot.get("code")
+        if code is None:
+            continue
         prev = oldest.get(code)
         if prev is None or str(lot.get("buyDate")) < str(prev.get("buyDate")):
             oldest[code] = {"buyDate": lot.get("buyDate"), "nextSell": lot.get("plannedSellDateEstimate")}
+            buy_rank_by_code[code] = lot.get("rank") if isinstance(lot.get("rank"), (int, float)) else None
+
+    # 매수시점 산식 구성값(종합/수익성/저평가 순위 + 수익성/저평가 지표)을 code 기준으로 매핑. [Phase 45-C]
+    # rankings(todayMagicRankingTop10)에서 순위/지표 6종만 사용하고 raw 계산값(EBIT/EV/시총 등)은 공개하지 않는다.
+    ranking_by_code = {}
+    for it in (rankings.get("todayMagicRankingTop10") or []):
+        rcode = it.get("code")
+        if rcode is not None:
+            ranking_by_code[rcode] = it
 
     initial = _n(pf.get("initialCapital")) or 50000000
     cash = _n(pf.get("cash"))
@@ -225,11 +238,19 @@ def build_magic_public_summary():
     total_profit = round(realized + unreal, 2)
     return_rate = round((total_asset - initial) / initial * 100, 2) if initial else 0.0
 
+    def _ratio4(v):
+        # 비율 원시값(예: 0.844573)을 4자리로 반올림해 저장한다. UI 가 ×100 하여 % 표시.
+        return round(v, 4) if isinstance(v, (int, float)) else None
+
+    def _rank_or_none(v):
+        return v if isinstance(v, (int, float)) else None
+
     holdings = []
     for p in (pf.get("positionsByCode") or []):
         code = p.get("code")
         inv = _n(p.get("totalInvested"))
         prof = p.get("evalProfit")
+        rk = ranking_by_code.get(code) or {}
         holdings.append({
             "code": code, "name": p.get("name"), "quantity": p.get("totalQuantity"),
             "averageBuyPrice": p.get("avgBuyPrice"), "evaluationPrice": p.get("currentPrice"),
@@ -239,6 +260,13 @@ def build_magic_public_summary():
             "lotCount": p.get("lotCount"),
             "oldestBuyDate": oldest.get(code, {}).get("buyDate"),
             "nextSellDateEstimate": oldest.get(code, {}).get("nextSell"),
+            # [Phase 45-C] 매수시점 마법공식 순위/구성값 (additive, 값 없으면 None)
+            "buyRank": buy_rank_by_code.get(code),
+            "combinedRank": _rank_or_none(rk.get("combinedRank")),
+            "profitabilityRank": _rank_or_none(rk.get("profitabilityRank")),
+            "valueRank": _rank_or_none(rk.get("valueRank")),
+            "returnOnCapital": _ratio4(rk.get("returnOnCapital")),
+            "earningsYield": _ratio4(rk.get("earningsYield")),
         })
 
     formula = pf.get("formula") or {}

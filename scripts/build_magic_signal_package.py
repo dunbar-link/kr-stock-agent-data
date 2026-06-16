@@ -28,11 +28,9 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-
-import magic_rolling_engine as E  # make_calendar (순수 함수; 네트워크 0)
 
 # ----- 경로 -----
 ROOT = Path(__file__).resolve().parents[1]                 # REPO2: kr-stock-agent-data-new
@@ -57,11 +55,34 @@ BLOCKED_MISSING_RANKING = "BLOCKED_MISSING_RANKING"
 BLOCKED_UNSAFE_OUTPUT_PATH = "BLOCKED_UNSAFE_OUTPUT_PATH"
 BLOCKED_GENERATION_ERROR = "BLOCKED_GENERATION_ERROR"
 BLOCKED_PACKAGE_CONFLICT = "BLOCKED_PACKAGE_CONFLICT"
+BLOCKED_NEXT_EXECUTION_DATE_UNAVAILABLE = "BLOCKED_NEXT_EXECUTION_DATE_UNAVAILABLE"
 
 # 검증 임계값(테스트에서 주입 가능)
 DEFAULT_MIN_VALID_PRICE_FRACTION = 0.5
 DEFAULT_TOP10_N = 10
 DEFAULT_TOP_AUDIT_N = 100
+
+# KRX 휴장일(주말 외). 다음 *체결일*은 미래라 pykrx(OHLCV 기반 get_business_days/OHLCV)로는 알 수 없다
+# — 미래 날짜는 시세가 없어 빈 결과/예외가 난다(45-E5.2 실증). 따라서 주말 + 아래 휴장표로 전진 계산한다.
+# ※ KRX 공시 기준 *매년 갱신 필요*. 현재 2026 전체 + 2027 신정(연말 롤오버용)까지 정비됨.
+KRX_HOLIDAYS = frozenset({
+    "2026-01-01",                                  # 신정
+    "2026-02-16", "2026-02-17", "2026-02-18",      # 설날 연휴
+    "2026-03-01", "2026-03-02",                    # 삼일절(일)→대체(월)
+    "2026-05-01",                                  # 근로자의날(KRX 휴장)
+    "2026-05-05",                                  # 어린이날
+    "2026-05-24", "2026-05-25",                    # 부처님오신날(일)→대체(월)
+    "2026-06-06",                                  # 현충일(토)
+    "2026-08-15", "2026-08-17",                    # 광복절(토)→대체(월)
+    "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-28",  # 추석 연휴(토)→대체(월)
+    "2026-10-03", "2026-10-05",                    # 개천절(토)→대체(월)
+    "2026-10-09",                                  # 한글날
+    "2026-12-25",                                  # 성탄절
+    "2026-12-31",                                  # KRX 폐장일
+    "2027-01-01",                                  # 신정(연말 롤오버 경계)
+})
+KRX_HOLIDAY_CALENDAR_THROUGH = "2026-12-31"        # 이 날짜 이후는 휴장표 미정비(경고만)
+MAX_FORWARD_LOOKAHEAD_DAYS = 15
 
 # top10/top100 직렬화 필드(산식이 실제 사용/생성한 감사 필드만; buyOpenPrice 등 체결가는 절대 미포함)
 TOP_FIELDS = ("rank", "combinedRank", "profitabilityRank", "valueRank", "returnOnCapital",
@@ -134,32 +155,85 @@ def _default_output_dir(signal_date: str) -> Path:
     return Path(tempfile.gettempdir()) / "wababa-magic-signal" / signal_date
 
 
-# ===== KRX 거래일 (신뢰 캘린더; 평일/+1일 추정 금지) =====
+# ===== KRX 거래일 (전진 계산; 단순 +1일/월~금 추정 금지, 휴장일 제외) =====
 
-def next_krx_trading_day(signal_date: str, calendar) -> Optional[str]:
-    """signalAsOfDate 다음 실제 KRX 거래일. 캘린더 set 기반(금→월, 휴장전→휴장후 정상). 없으면 None."""
-    if not calendar or not calendar.get("tradingDays"):
-        return None
+def next_krx_trading_day(signal_date: str, calendar=None, *, holidays=None,
+                         max_lookahead_days: int = MAX_FORWARD_LOOKAHEAD_DAYS) -> Optional[str]:
+    """signalAsOfDate *다음 첫* KRX 거래일.
+    - calendar(신뢰 거래일 set) 주입 시: 그 set에서 signal보다 뒤 첫 날(없으면 None) — 테스트/명시 캘린더용.
+    - 미주입(실운영): 주말 제외 + KRX 휴장표 제외로 *전진* 계산. 월말→다음달, 연말→다음연도 자동 처리.
+    pykrx는 미래 거래일을 모르므로(시세 없음) 휴장표가 미래 판정의 근거다. 단순 +1일/평일 추정 아님."""
     sd = str(signal_date)[:10]
-    later = sorted(d for d in calendar["tradingDays"] if d > sd)
-    return later[0] if later else None
-
-
-def _default_calendar(signal_date: str, pykrx_stock=None):
-    """signal 월 + 다음 월 실거래일을 합쳐 캘린더 생성(월말 신호의 다음달 첫 거래일 대비). 실패→None."""
+    if calendar is not None and calendar.get("tradingDays"):
+        later = sorted(d for d in calendar["tradingDays"] if d > sd)
+        return later[0] if later else None
+    hol = set(KRX_HOLIDAYS) | set(holidays or [])
     try:
-        if pykrx_stock is None:
-            from pykrx import stock as pykrx_stock  # lazy: import 시 network 회피
-        y, m = int(signal_date[:4]), int(signal_date[5:7])
-        months = [(y, m), (y + (1 if m == 12 else 0), 1 if m == 12 else m + 1)]
-        days = []
-        for (yy, mm) in months:
-            for d in (pykrx_stock.get_business_days(yy, mm) or []):
-                s = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-                days.append(s)
-        return E.make_calendar(days) if days else None
-    except Exception:
+        d = date.fromisoformat(sd)
+    except ValueError:
         return None
+    for _ in range(max_lookahead_days):
+        d = d + timedelta(days=1)
+        iso = d.isoformat()
+        if d.weekday() >= 5 or iso in hol:      # 주말/휴장 제외
+            continue
+        return iso
+    return None
+
+
+def _forward_trading_days_between(signal_iso: str, candidate_iso: str, holidays: set) -> list:
+    out = []
+    d = date.fromisoformat(signal_iso) + timedelta(days=1)
+    end = date.fromisoformat(candidate_iso)
+    while d < end:
+        iso = d.isoformat()
+        if d.weekday() < 5 and iso not in holidays:
+            out.append(iso)
+        d = d + timedelta(days=1)
+    return out
+
+
+def validate_next_execution_date(signal_date: str, candidate, calendar=None, *, holidays=None):
+    """READY 게이트. candidate가 signalAsOfDate '다음 첫' KRX 거래일인지 검증.
+    null / 이전·동일 / 비거래일(주말·휴장) / 사이 거래일 스킵 → (False, 사유). 통과 → (True, 'ok')."""
+    sd = str(signal_date)[:10]
+    if candidate in (None, ""):
+        return False, "nextExecutionDateCandidate is null"
+    cand = str(candidate)[:10]
+    if cand <= sd:
+        return False, f"candidate {cand} not after signalAsOfDate {sd}"
+    hol = set(KRX_HOLIDAYS) | set(holidays or [])
+    if calendar is not None and calendar.get("tradingDays"):
+        tdays = calendar["tradingDays"]
+        if cand not in tdays:
+            return False, f"candidate {cand} not a KRX trading day"
+        between = sorted(d for d in tdays if sd < d < cand)
+        if between:
+            return False, f"candidate {cand} skips KRX trading day(s) {between}"
+        return True, "ok"
+    try:
+        cd = date.fromisoformat(cand)
+    except ValueError:
+        return False, f"candidate {cand} not a valid date"
+    if cd.weekday() >= 5 or cand in hol:
+        return False, f"candidate {cand} not a KRX trading day (weekend/holiday)"
+    between = _forward_trading_days_between(sd, cand, hol)
+    if between:
+        return False, f"candidate {cand} skips KRX trading day(s) {between}"
+    return True, "ok"
+
+
+def read_only_next_execution_for_package(package_dir, *, holidays=None) -> dict:
+    """기존 TEMP 패키지를 *수정하지 않고*(read-only) signalAsOfDate의 다음 KRX 거래일만 계산해 보고.
+    manifest.json만 읽고 어떤 파일도 쓰지 않는다."""
+    pkg = Path(package_dir)
+    man = json.loads((pkg / "manifest.json").read_text(encoding="utf-8"))
+    sig = man.get("signalAsOfDate")
+    cand = next_krx_trading_day(sig, None, holidays=holidays)
+    ok, reason = validate_next_execution_date(sig, cand, None, holidays=holidays)
+    return {"signalAsOfDate": sig, "nextExecutionDateCandidate": cand, "valid": ok, "reason": reason,
+            "packageStatusOnDisk": man.get("packageStatus"),
+            "writeCount": 0, "filesModified": False}
 
 
 # ===== 기본 universe / ranking (네트워크는 실제 실행 때만; DART 갱신 0 강제) =====
@@ -276,7 +350,7 @@ def build_signal_package(signal_date: str, *, now=None, market_close_at=None, ou
                          formula_version=None, formula_mode=None,
                          min_valid_price_fraction: float = DEFAULT_MIN_VALID_PRICE_FRACTION,
                          baseline_universe_count: Optional[int] = None,
-                         min_universe_count: int = 0) -> dict:
+                         min_universe_count: int = 0, extra_holidays=None) -> dict:
     """신호 패키지를 TEMP에만 원자적으로 생성한다. production 쓰기 0. 항상 manifest dict를 반환한다."""
     signal_date = str(signal_date)[:10]
     blacklist = set(blacklist or [])
@@ -307,12 +381,20 @@ def build_signal_package(signal_date: str, *, now=None, market_close_at=None, ou
 
     formula_version, formula_mode = _resolve_formula_meta(formula_version, formula_mode)
     code_commit = code_commit if code_commit is not None else _git_head()
-    cal = calendar if calendar is not None else _default_calendar(signal_date)
-    next_exec = next_krx_trading_day(signal_date, cal)
 
     work_dir = None
+    next_exec = None
     try:
-        # 3) universe (build_payload; DART 갱신 0)
+        # 3) 다음 KRX 거래일(체결일 후보) 계산 + READY 게이트 (network 전에 차단)
+        next_exec = next_krx_trading_day(signal_date, calendar, holidays=extra_holidays)
+        ok_next, next_reason = validate_next_execution_date(signal_date, next_exec, calendar,
+                                                            holidays=extra_holidays)
+        if not ok_next:
+            return _result(BLOCKED_NEXT_EXECUTION_DATE_UNAVAILABLE, signal_date, now=now_dt,
+                           market_close_at=close_dt, output_dir=out_dir, next_exec=next_exec,
+                           run_reason=f"next execution trading day invalid: {next_reason}")
+
+        # 4) universe (build_payload; DART 갱신 0)
         bpf = build_payload_fn or _default_build_payload
         payload = bpf()
         meta = (payload or {}).get("meta") or {}
@@ -405,6 +487,9 @@ def build_signal_package(signal_date: str, *, now=None, market_close_at=None, ou
         warnings = []
         if not blacklist:
             warnings.append("blacklist empty: signal package applies formula exclusions only")
+        if next_exec and next_exec > KRX_HOLIDAY_CALENDAR_THROUGH:
+            warnings.append(f"nextExecutionDateCandidate {next_exec} beyond curated KRX holiday horizon "
+                            f"{KRX_HOLIDAY_CALENDAR_THROUGH}; verify KRX holidays before execution")
 
         manifest = {
             "schemaVersion": SCHEMA_VERSION,

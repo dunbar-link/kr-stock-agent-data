@@ -263,6 +263,119 @@ def t16_ranking_reuse_spy():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ----- 45-E5.2: 다음 체결일 계산 보강 / READY 게이트 -----
+
+def t17_forward_normal_next_day():
+    # 평일 다음 거래일(캘린더 미주입 → 전진 계산)
+    assert P.next_krx_trading_day("2026-06-16") == "2026-06-17"
+    ok, _ = P.validate_next_execution_date("2026-06-16", "2026-06-17")
+    assert ok is True
+
+
+def t18_forward_friday_to_monday():
+    # 금(06-19)→월(06-22): 주말 건너뜀, +1일 아님
+    assert P.next_krx_trading_day("2026-06-19") == "2026-06-22"
+    assert P.next_krx_trading_day("2026-06-19") != "2026-06-20"
+
+
+def t19_forward_pre_holiday_to_post_holiday():
+    # 광복절(08-15 토)+대체(08-17 월) 건너뛰고 08-18(화). 내장 KRX_HOLIDAYS 사용
+    assert P.next_krx_trading_day("2026-08-14") == "2026-08-18"
+
+
+def t20_forward_month_end_rollover():
+    # 월말(01-30 금)→다음 달(02-02 월)
+    assert P.next_krx_trading_day("2026-01-30") == "2026-02-02"
+
+
+def t21_forward_year_end_rollover():
+    # 연말(12-30)→다음 연도(2027-01-04): 12-31 폐장·01-01 신정·주말 건너뜀
+    assert P.next_krx_trading_day("2026-12-30") == "2027-01-04"
+
+
+def t22_calendar_no_later_day_returns_none():
+    cal_only = E.make_calendar([SIGNAL])          # signal만, 이후 거래일 없음
+    assert P.next_krx_trading_day(SIGNAL, cal_only) is None
+    assert P.next_krx_trading_day("nope") is None  # 잘못된 입력도 None(전진 경로)
+
+
+def t23_next_calc_exception_blocked():
+    orig = P.next_krx_trading_day
+    def boom(*a, **k):
+        raise RuntimeError("injected trading-day calc failure")
+    P.next_krx_trading_day = boom
+    tmp = tempfile.mkdtemp()
+    try:
+        r = call(output_dir=str(Path(tmp) / SIGNAL))
+        assert r["packageStatus"] == P.BLOCKED_GENERATION_ERROR, r["packageStatus"]
+        assert not (Path(tmp) / SIGNAL).exists()
+    finally:
+        P.next_krx_trading_day = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def t24_null_candidate_blocks_ready():
+    cal_only = E.make_calendar([SIGNAL])          # 다음 거래일 없음 → candidate null
+    tmp = tempfile.mkdtemp()
+    try:
+        out = Path(tmp) / SIGNAL
+        r = call(output_dir=str(out), calendar=cal_only)
+        assert r["packageStatus"] == P.BLOCKED_NEXT_EXECUTION_DATE_UNAVAILABLE, r["packageStatus"]
+        assert r["blocked"] is True
+        assert not out.exists(), "READY 아님 → 파일 생성 0"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def t25_candidate_not_after_signal_blocked():
+    ok_eq, _ = P.validate_next_execution_date("2026-06-16", "2026-06-16")
+    ok_before, _ = P.validate_next_execution_date("2026-06-16", "2026-06-15")
+    assert ok_eq is False and ok_before is False
+
+
+def t26_candidate_skips_trading_day_blocked():
+    cal = E.make_calendar(["2026-06-16", "2026-06-17", "2026-06-18"])
+    ok_cal, _ = P.validate_next_execution_date("2026-06-16", "2026-06-18", cal)   # 06-17 스킵
+    assert ok_cal is False
+    ok_fwd, _ = P.validate_next_execution_date("2026-06-16", "2026-06-18")        # 전진 경로도 06-17 스킵
+    assert ok_fwd is False
+
+
+def t27_existing_package_readonly_next_exec():
+    tmp = tempfile.mkdtemp()
+    try:
+        out = Path(tmp) / SIGNAL
+        r = call(output_dir=str(out))
+        assert r["packageStatus"] == P.READY, r["packageStatus"]
+        names = ("universe.json", "rankings.json", "manifest.json")
+        before = {f: (_hash(out / f), _mtime(out / f)) for f in names}
+        info = P.read_only_next_execution_for_package(out)
+        assert info["signalAsOfDate"] == SIGNAL
+        assert info["nextExecutionDateCandidate"] == "2026-06-17"
+        assert info["valid"] is True and info["writeCount"] == 0 and info["filesModified"] is False
+        after = {f: (_hash(out / f), _mtime(out / f)) for f in names}
+        assert before == after, "기존 TEMP 패키지 해시·mtime 불변(read-only)"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def t28_forward_path_production_unchanged():
+    paths = [P.FINANCIAL_UNIVERSE_PATH,
+             P.ROOT / "magic-formula-portfolio.json",
+             P.ROOT / "recommendation-history.json",
+             P.REPO1_ROOT / "public" / "data" / "recommendation-history.json"]
+    before = {str(p): _hash(p) for p in paths}
+    tmp = tempfile.mkdtemp()
+    try:
+        r = call(output_dir=str(Path(tmp) / SIGNAL), calendar=None)   # 전진(휴장표) 경로
+        assert r["packageStatus"] == P.READY, r["packageStatus"]
+        assert r["nextExecutionDateCandidate"] == "2026-06-17"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    after = {str(p): _hash(p) for p in paths}
+    assert before == after, "production JSON 불변(전진 경로)"
+
+
 TESTS = [
     ("1  장마감 전→MARKET_NOT_CLOSED(생성0)", t1_market_not_closed),
     ("2  tz-naive now/close→BLOCKED", t2_tz_naive_blocked),
@@ -280,6 +393,18 @@ TESTS = [
     ("14 재무 캐시 해시·mtime 불변", t14_financial_cache_unchanged),
     ("15 production JSON 불변(REPO2/REPO1)", t15_production_json_unchanged),
     ("16 ranking 함수 재사용 spy(복제0)", t16_ranking_reuse_spy),
+    ("17 전진 정상 다음 거래일(06-16→17)", t17_forward_normal_next_day),
+    ("18 전진 금→월(주말 건너뜀)", t18_forward_friday_to_monday),
+    ("19 전진 휴장전→휴장후(광복절)", t19_forward_pre_holiday_to_post_holiday),
+    ("20 전진 월말→다음 달", t20_forward_month_end_rollover),
+    ("21 전진 연말→다음 연도", t21_forward_year_end_rollover),
+    ("22 거래일 set 빈 결과/잘못된 입력→None", t22_calendar_no_later_day_returns_none),
+    ("23 다음거래일 계산 예외→GENERATION_ERROR", t23_next_calc_exception_blocked),
+    ("24 candidate null→READY 금지(생성0)", t24_null_candidate_blocks_ready),
+    ("25 candidate≤signal→BLOCKED", t25_candidate_not_after_signal_blocked),
+    ("26 중간 거래일 스킵 candidate→BLOCKED", t26_candidate_skips_trading_day_blocked),
+    ("27 기존 TEMP 패키지 read-only 다음거래일+불변", t27_existing_package_readonly_next_exec),
+    ("28 전진 경로 production 불변", t28_forward_path_production_unchanged),
 ]
 
 

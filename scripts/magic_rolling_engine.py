@@ -219,8 +219,16 @@ def _blocked(date, status, reason, now, extra=None) -> dict:
 
 
 def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_prices: dict,
-                      calendar: Optional[dict], now: Optional[str] = None):
-    """순수 함수. (새 state, day_result) 반환. 입력 state 불변(deepcopy). 파일 I/O 0."""
+                      calendar: Optional[dict], now: Optional[str] = None,
+                      timing: Optional[dict] = None):
+    """순수 함수. (새 state, day_result) 반환. 입력 state 불변(deepcopy). 파일 I/O 0.
+
+    timing(선택): 신호일·체결일 분리 메타데이터를 batch/buyLedger/dailyLedger에 *추가 기록만* 한다.
+      look-ahead 검증은 wrapper가 끝낸 뒤 통과한 값만 주입한다(코어는 검증/계산하지 않음).
+      None이면 기존 동작과 100% 동일(하위호환). 기대 키:
+        signalAsOfDate, rankingGeneratedAt, executionDate, executionMarketOpenAt,
+        executionPriceSource, lookAheadValidationPassed
+    date 인자는 *체결일(executionDate)* 이다."""
     st = copy.deepcopy(state)
     now = now or _now()
     open_prices = open_prices or {}
@@ -336,12 +344,20 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
             "buyDate": date, "buyOpenPrice": op, "quantity": q, "investedAmount": inv,
             "rankSnapshot": rank_snap, "buySequence": seq, "status": "OPEN", "priceSource": PRICE_SOURCE_TRADE,
         })
-        st["buyLedger"].append({
+        buy_entry = {
             "tradeId": f"BUY-{date}-{r['code']}-{i:02d}", "date": date, "batchId": batch_id,
             "lotId": lot_id, "code": r["code"], "name": r.get("name"), "side": "BUY",
             "executionPrice": op, "quantity": q, "amount": inv, "rankSnapshot": rank_snap,
             "priceSource": PRICE_SOURCE_TRADE,
-        })
+        }
+        if timing:
+            buy_entry.update({
+                "signalAsOfDate": timing.get("signalAsOfDate"),
+                "rankingGeneratedAt": timing.get("rankingGeneratedAt"),
+                "executionDate": timing.get("executionDate", date),
+                "executionPriceSource": timing.get("executionPriceSource", PRICE_SOURCE_TRADE),
+            })
+        st["buyLedger"].append(buy_entry)
         plan.append({"code": r["code"], "name": r.get("name"), "openPrice": op, "quantity": q, "amount": inv})
         lot_ids.append(lot_id)
         buy_count += 1
@@ -355,6 +371,14 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
         "rolloverBudget": rollover_budget,
         "plannedSellSequence": seq + HOLD_TRADING_DAYS, "closedDate": None, "createdAt": now,
     }
+    if timing:
+        new_batch.update({
+            "signalAsOfDate": timing.get("signalAsOfDate"),
+            "rankingGeneratedAt": timing.get("rankingGeneratedAt"),
+            "executionDate": timing.get("executionDate", date),
+            "executionMarketOpenAt": timing.get("executionMarketOpenAt"),
+            "executionPriceSource": timing.get("executionPriceSource", PRICE_SOURCE_TRADE),
+        })
     st["batches"].append(new_batch)
 
     ev = evaluate(st, date, eval_prices)
@@ -364,6 +388,13 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
     led.update({"allocatedCapital": round(allocated, 2), "totalInvested": round(total_invested, 2),
                 "cashReserve": cash_reserve, "rolloverBudget": rollover_budget,
                 "rolloverSaleProceeds": (proceeds if is_rollover else None), "plan": plan})
+    if timing:
+        led.update({
+            "signalAsOfDate": timing.get("signalAsOfDate"),
+            "executionDate": timing.get("executionDate", date),
+            "rankingGeneratedAt": timing.get("rankingGeneratedAt"),
+            "lookAheadValidationPassed": timing.get("lookAheadValidationPassed"),
+        })
     st["dailyLedger"].append(led)
     st["evalSnapshots"].append(ev)
     st["prevTotalAsset"] = ev["totalAsset"]

@@ -48,7 +48,9 @@ BLOCKED_MISSING_RANKING = "BLOCKED_MISSING_RANKING"
 BLOCKED_NO_TRADING_CALENDAR = "BLOCKED_NO_TRADING_CALENDAR"
 BLOCKED_INSUFFICIENT_AVAILABLE_CASH = "BLOCKED_INSUFFICIENT_AVAILABLE_CASH"  # 초기배치: officialAvailableCash < 100만
 BLOCKED_INSUFFICIENT_BATCH_BUDGET = "BLOCKED_INSUFFICIENT_BATCH_BUDGET"      # 10종목 최소1주 > allocatedCapital
+BLOCKED_MULTIPLE_OVERDUE_BATCHES = "BLOCKED_MULTIPLE_OVERDUE_BATCHES"        # 45-E10: due batch 2개 이상 → 자동 일괄매도 금지
 MISSED_RUN = "MISSED_RUN"
+MISSED_RUN_NO_PREOPEN_SIGNAL = "NO_PREOPEN_SIGNAL_PACKAGE"
 PILOT_RUN = "PILOT"
 
 SELL_REASON_ROLLOVER = "FIFTY_BATCH_FIFO_ROLLOVER"
@@ -91,8 +93,12 @@ def empty_official_state(initial_capital: int = INITIAL_CAPITAL,
         "initialCapital": int(initial_capital),
         "initialBatchCapital": int(initial_batch_capital),
         "officialAvailableCash": float(initial_capital),   # 아직 생성 안 된 초기배치용 자본
-        "officialTradingCalendar": [],
-        "officialSequence": 0,
+        "officialTradingCalendar": [],                      # [legacy] 성공 batch 날짜(=officialExecutionCalendar와 동일). 보존만.
+        # 45-E10: 성공 batch 순번(officialSequence)과 실제 KRX 거래일 순번(officialTradingDayIndex) 분리.
+        "officialTradingDayIndex": 0,                       # officialStartDate 이후 실제 KRX 거래일 순번(COMPLETED+MISSED_RUN 증가)
+        "officialKrxTradingCalendar": [],                   # 실제 KRX 거래일 전체(누락일 포함)
+        "officialExecutionCalendar": [],                    # 성공적으로 batch 생성한 날짜만
+        "officialSequence": 0,                              # 성공 batch 순번(COMPLETED만 증가)
         "batches": [],
         "itemLots": [],
         "buyLedger": [],        # = 거래원장 BUY
@@ -114,6 +120,20 @@ def _official_open_batches(state: dict) -> list:
     return sorted([b for b in state["batches"]
                    if b.get("operationMode") == OFFICIAL and b.get("status") == "OPEN"],
                   key=lambda b: b.get("sequence", 0))
+
+
+def due_official_batches(state: dict, current_trading_day_index: int) -> list:
+    """45-E10: 매도 예정 거래일 index가 현재 거래일 index 이하인 open 공식 batch(FIFO=오래된 순).
+    plannedSellTradingDayIndex 누락 batch는 buyTradingDayIndex(또는 sequence) + HOLD_TRADING_DAYS로 보정."""
+    out = []
+    for b in _official_open_batches(state):
+        psi = b.get("plannedSellTradingDayIndex")
+        if psi is None:
+            base = b.get("buyTradingDayIndex", b.get("sequence", 0))
+            psi = base + HOLD_TRADING_DAYS
+        if psi <= current_trading_day_index:
+            out.append(b)
+    return sorted(out, key=lambda b: (b.get("buyTradingDayIndex", b.get("sequence", 0)), b.get("sequence", 0)))
 
 
 def fund_cash(state: dict) -> float:
@@ -220,7 +240,7 @@ def _blocked(date, status, reason, now, extra=None) -> dict:
 
 def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_prices: dict,
                       calendar: Optional[dict], now: Optional[str] = None,
-                      timing: Optional[dict] = None):
+                      timing: Optional[dict] = None, trading_day_index: Optional[int] = None):
     """순수 함수. (새 state, day_result) 반환. 입력 state 불변(deepcopy). 파일 I/O 0.
 
     timing(선택): 신호일·체결일 분리 메타데이터를 batch/buyLedger/dailyLedger에 *추가 기록만* 한다.
@@ -259,10 +279,16 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
         return st, _blocked(date, BLOCKED_MISSING_RANKING, "ranking missing or <10", now)
     top10 = ranking[:TOP_N]
 
-    # 4) 교체 여부(open batch 50개 이상이면 FIFO 교체) + 매도 대상 배치
-    open_batches = _official_open_batches(st)
-    is_rollover = len(open_batches) >= MAX_OPEN_BATCHES
-    sell_batch = open_batches[0] if is_rollover else None
+    # 4) 교체 여부 — 45-E10: 실제 KRX 거래일 index 기준(open batch 수/officialSequence 기준 아님).
+    #    현재 거래일 index = 주입값 또는 (직전 index+1). 누락일은 외부 recorder가 index를 올려둠.
+    current_index = trading_day_index if trading_day_index is not None else st.get("officialTradingDayIndex", 0) + 1
+    due = due_official_batches(st, current_index)
+    if len(due) >= 2:   # 2개 이상 overdue → 자동 일괄매도 금지(별도 복구 승인)
+        return st, _blocked(date, BLOCKED_MULTIPLE_OVERDUE_BATCHES,
+                            f"{len(due)} batches overdue at tradingDayIndex {current_index}: "
+                            f"{[b['batchId'] for b in due]}", now)
+    is_rollover = len(due) == 1
+    sell_batch = due[0] if is_rollover else None
     sell_lots = _open_lots(st, sell_batch["batchId"]) if sell_batch else []
 
     # 5) 실제 시가 완전성(신규 top10 + 매도배치 종목 전부). 하나라도 없으면 전체 BLOCKED(매도도 0).
@@ -295,7 +321,11 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
     cash_reserve = round(allocated - total_invested, 2)
 
     # === COMPLETED: 원자적 적용 (매도+매수 한 번에) ===
-    st["officialTradingCalendar"].append(date)
+    st["officialTradingCalendar"].append(date)                     # [legacy] 보존
+    if date not in st.setdefault("officialKrxTradingCalendar", []):
+        st["officialKrxTradingCalendar"].append(date)              # 실제 거래일(성공)
+    st.setdefault("officialExecutionCalendar", []).append(date)    # 성공 batch 날짜
+    st["officialTradingDayIndex"] = current_index                  # 실제 거래일 index 갱신
     seq = st["officialSequence"] + 1
     st["officialSequence"] = seq
     if st["officialStartDate"] is None:
@@ -343,6 +373,8 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
             "lotId": lot_id, "batchId": batch_id, "code": r["code"], "name": r.get("name"),
             "buyDate": date, "buyOpenPrice": op, "quantity": q, "investedAmount": inv,
             "rankSnapshot": rank_snap, "buySequence": seq, "status": "OPEN", "priceSource": PRICE_SOURCE_TRADE,
+            "buyTradingDayIndex": current_index,
+            "plannedSellTradingDayIndex": current_index + HOLD_TRADING_DAYS,
         })
         buy_entry = {
             "tradeId": f"BUY-{date}-{r['code']}-{i:02d}", "date": date, "batchId": batch_id,
@@ -369,7 +401,10 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
         "cashReserve": cash_reserve,
         "rolloverSourceBatchId": sell_batch_id, "rolloverSaleProceeds": (proceeds if is_rollover else None),
         "rolloverBudget": rollover_budget,
-        "plannedSellSequence": seq + HOLD_TRADING_DAYS, "closedDate": None, "createdAt": now,
+        "plannedSellSequence": seq + HOLD_TRADING_DAYS,   # [legacy] 보존(매도 판정엔 미사용)
+        "buyTradingDayIndex": current_index,
+        "plannedSellTradingDayIndex": current_index + HOLD_TRADING_DAYS,
+        "closedDate": None, "createdAt": now,
     }
     if timing:
         new_batch.update({
@@ -416,6 +451,71 @@ def build_pilot_batch(existing_item_lots: list, buy_date: str = "2026-06-08") ->
 
 def record_missed_run(date: str, reason: str = "DAILY_PIPELINE_NOT_EXECUTED") -> dict:
     return {"date": date, "status": MISSED_RUN, "reason": reason, "syntheticTradesCreated": False}
+
+
+# ----- 45-E10: 거래일 index 마이그레이션 + MISSED_RUN 적용(순수 함수, 입력 불변) -----
+
+def migrate_official_state_indices(state: dict) -> dict:
+    """기존 canonical을 거래일 index 모델로 *additive* 마이그레이션(idempotent). 입력 불변(deepcopy 반환).
+    - officialTradingDayIndex / officialKrxTradingCalendar / officialExecutionCalendar 보장.
+    - 누락 시에만 officialTradingCalendar(=성공일)에서 backfill(누락일 없던 과거이므로 index==sequence).
+    - batch/itemLot에 buyTradingDayIndex / plannedSellTradingDayIndex 보강(없을 때만)."""
+    st = copy.deepcopy(state)
+    exec_cal = list(st.get("officialExecutionCalendar") or [])
+    if not exec_cal:
+        exec_cal = list(st.get("officialTradingCalendar") or [])
+        st["officialExecutionCalendar"] = exec_cal
+    krx_cal = list(st.get("officialKrxTradingCalendar") or [])
+    if not krx_cal:
+        # 마이그레이션 시점엔 누락일이 아직 없으므로 KRX 거래일 = 성공일.
+        krx_cal = list(st.get("officialTradingCalendar") or [])
+        st["officialKrxTradingCalendar"] = krx_cal
+    if st.get("officialTradingDayIndex") in (None, 0) and krx_cal:
+        st["officialTradingDayIndex"] = len(krx_cal)
+    elif "officialTradingDayIndex" not in st:
+        st["officialTradingDayIndex"] = len(krx_cal)
+
+    for b in st.get("batches", []):
+        if b.get("operationMode") != OFFICIAL:
+            continue
+        if b.get("buyTradingDayIndex") is None:
+            b["buyTradingDayIndex"] = b.get("sequence", 0)
+        if b.get("plannedSellTradingDayIndex") is None:
+            b["plannedSellTradingDayIndex"] = b["buyTradingDayIndex"] + HOLD_TRADING_DAYS
+    for l in st.get("itemLots", []):
+        if l.get("buyTradingDayIndex") is None:
+            l["buyTradingDayIndex"] = l.get("buySequence", 0)
+        if l.get("plannedSellTradingDayIndex") is None:
+            l["plannedSellTradingDayIndex"] = l["buyTradingDayIndex"] + HOLD_TRADING_DAYS
+    return st
+
+
+def apply_missed_run(state: dict, date: str, reason: str = MISSED_RUN_NO_PREOPEN_SIGNAL,
+                     now: Optional[str] = None):
+    """MISSED_RUN을 append-only로 기록. 거래/배치/자금/원장/평가 변경 0. (새 state, entry, already) 반환.
+    officialTradingDayIndex만 +1(실제 거래일 경과), officialSequence·officialExecutionCalendar 불변.
+    idempotent: 같은 날짜가 이미 missedRuns에 있으면 변경 없이 already=True."""
+    st = migrate_official_state_indices(state)
+    now = now or _now()
+    existing = next((m for m in st.get("missedRuns", []) if m.get("date") == date), None)
+    if existing is not None:
+        return st, existing, True
+    seq_before = st["officialSequence"]
+    idx_before = st["officialTradingDayIndex"]
+    if date not in st["officialKrxTradingCalendar"]:
+        st["officialKrxTradingCalendar"].append(date)
+    st["officialTradingDayIndex"] = idx_before + 1
+    entry = {
+        "date": date, "status": MISSED_RUN, "reason": reason,
+        "officialTradingDayIndex": st["officialTradingDayIndex"],
+        "officialSequence": seq_before,
+        "syntheticTradesCreated": False, "buyCount": 0, "sellCount": 0,
+        "batchCreated": False, "executionPriceUsed": False,
+        "signalPackagePresentBeforeOpen": False, "lookAheadTradePrevented": True,
+        "createdAt": now,
+    }
+    st["missedRuns"].append(entry)
+    return st, entry, False
 
 
 # ----- dry-run 리포트(파일 쓰기 0) -----

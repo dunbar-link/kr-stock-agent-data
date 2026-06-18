@@ -82,7 +82,12 @@ _PUBLIC_TOP_ALLOW = {
     # Phase 43-C: 마법공식 펀드 공개 최소 요약(내부 순위/로그/lot 원장은 미노출)
     "magicPortfolio", "magicPortfolioSummary", "magicRecentActions",
     "magicFundPolicy", "magicFormula",
+    # Phase 45-E8.1: OFFICIAL 장부 public 매핑(additive; PILOT 5키와 분리)
+    "magicOfficialSummary", "magicOfficialPortfolio", "magicOfficialTradeDays",
 }
+
+# Phase 45-E8.1: OFFICIAL canonical 장부 경로(읽기 전용 매핑 입력)
+OFFICIAL_STATE_PATH = ROOT_DIR / "magic-formula-official-state.json"
 
 _PUBLIC_PORTFOLIO_ALLOW = {"initialCapital", "cash", "realizedProfit", "positions"}
 _PUBLIC_POSITION_ALLOW = {"code", "name", "buyPrice", "quantity"}
@@ -335,6 +340,35 @@ def build_magic_public_summary():
     }
 
 
+def apply_magic_official_public(enriched, *, state_path=OFFICIAL_STATE_PATH,
+                                existing_public=None, warn=print):
+    """OFFICIAL canonical → public 3키를 additive merge. 실패해도 2펀드/legacy 생성은 계속(격리).
+    실패 시 기존 public의 last-known-good magicOfficial* 키를 보존한다. 파일 쓰기 0."""
+    try:
+        from build_magic_official_public import (build_magic_official_public as _bmop,
+                                                 OFFICIAL_PUBLIC_KEYS)
+    except Exception as e:  # noqa: BLE001
+        if warn:
+            warn(f"[WARN] magicOfficial mapping import 실패(스킵): {type(e).__name__}: {e}")
+        return enriched
+    try:
+        if not Path(state_path).exists():
+            raise FileNotFoundError(str(state_path))
+        official = _bmop(state_path)
+        for k in OFFICIAL_PUBLIC_KEYS:
+            enriched[k] = official[k]
+        if warn:
+            warn(f"magicOfficial public 매핑 병합 완료: {state_path}")
+    except Exception as e:  # noqa: BLE001
+        if warn:
+            warn(f"[WARN] magicOfficial public 매핑 스킵(2펀드/legacy 영향 없음): {type(e).__name__}: {e}")
+        if isinstance(existing_public, dict):
+            for k in OFFICIAL_PUBLIC_KEYS:
+                if k in existing_public:
+                    enriched[k] = existing_public[k]  # last-known-good 보존
+    return enriched
+
+
 def write_public_recommendation_history(data):
     """webapp public/data 디렉터리가 있으면 sanitize 사본을 그곳에 저장."""
     if not PUBLIC_DATA_PATH.parent.exists():
@@ -342,6 +376,8 @@ def write_public_recommendation_history(data):
         return
     enriched = dict(data) if isinstance(data, dict) else {}
     enriched.update(build_magic_public_summary())  # 마법공식 공개 최소 요약 5키 병합(allowlist 통과)
+    existing_public = read_json(PUBLIC_DATA_PATH) if PUBLIC_DATA_PATH.exists() else None
+    enriched = apply_magic_official_public(enriched, existing_public=existing_public)  # OFFICIAL 3키 additive
     public_data = sanitize_recommendation_history_for_public(enriched)
     write_json(PUBLIC_DATA_PATH, public_data)
     print(f"written (public sanitized): {PUBLIC_DATA_PATH}")

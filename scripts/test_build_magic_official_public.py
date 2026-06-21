@@ -90,6 +90,57 @@ def to_canonical(st):
 STATE3 = to_canonical(build_engine_state(3))
 STATE51 = to_canonical(build_engine_state(51))
 
+# 45-E14: 실제 가격 기반 day-1/day-2 고정 fixture(거래일이 늘어도 불변). live canonical 검증은 dynamic.
+RANK_CODES = ["046940", "461300", "088130", "184230", "124500",
+              "053580", "171090", "018290", "052400", "215200"]
+REAL_NAMES = {"046940": "우원개발", "461300": "아이스크림미디어", "088130": "동아엘텍",
+              "184230": "SGA솔루션즈", "124500": "아이티센글로벌", "053580": "웹케시",
+              "171090": "선익시스템", "018290": "브이티", "052400": "코나아이", "215200": "메가스터디교육"}
+REAL_D1_OPENS = {"046940": 3465.0, "461300": 17650.0, "088130": 6900.0, "184230": 2110.0, "124500": 34200.0,
+                 "053580": 6780.0, "171090": 75700.0, "018290": 12780.0, "052400": 47600.0, "215200": 41950.0}
+REAL_D2_OPENS = {"046940": 3400.0, "461300": 16800.0, "088130": 6410.0, "184230": 2045.0, "124500": 32200.0,
+                 "053580": 6490.0, "171090": 71600.0, "018290": 12210.0, "052400": 46850.0, "215200": 39100.0}
+# day-2 보유 집계 기대값(batch1 qty + batch2 qty)
+EXPECT_TOTAL_QTY = {"046940": 57, "461300": 10, "088130": 29, "184230": 95, "124500": 5,
+                    "053580": 29, "171090": 2, "018290": 15, "052400": 4, "215200": 4}
+
+
+def _real_ranking():
+    return [{"code": c, "name": REAL_NAMES[c], "rank": i, "combinedRank": i * 2, "profitabilityRank": i,
+             "valueRank": i, "returnOnCapital": 0.5, "earningsYield": 0.2} for i, c in enumerate(RANK_CODES, 1)]
+
+
+def _timing(signal_as_of, exec_date):
+    return {"signalAsOfDate": signal_as_of, "rankingGeneratedAt": f"{signal_as_of}T18:00:00+09:00",
+            "executionDate": exec_date, "executionMarketOpenAt": f"{exec_date}T09:00:00+09:00",
+            "executionPriceSource": "pykrx_open", "lookAheadValidationPassed": True}
+
+
+def build_day1_fixture():
+    cal = E.make_calendar(["2026-06-16", "2026-06-17"])
+    st = E.empty_official_state()
+    st, _ = E.plan_official_day(st, "2026-06-17", _real_ranking(), REAL_D1_OPENS, REAL_D1_OPENS, cal,
+                                now="2026-06-17T18:00:00+09:00", timing=_timing("2026-06-16", "2026-06-17"),
+                                trading_day_index=1)
+    return to_canonical(st)
+
+
+def build_day2_fixture():
+    cal = E.make_calendar(["2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19"])
+    st = E.empty_official_state()
+    st, _ = E.plan_official_day(st, "2026-06-17", _real_ranking(), REAL_D1_OPENS, REAL_D1_OPENS, cal,
+                                now="2026-06-17T18:00:00+09:00", timing=_timing("2026-06-16", "2026-06-17"),
+                                trading_day_index=1)
+    st, _, _ = E.apply_missed_run(st, "2026-06-18", now="2026-06-18T08:00:00+09:00")
+    st, _ = E.plan_official_day(st, "2026-06-19", _real_ranking(), REAL_D2_OPENS, REAL_D2_OPENS, cal,
+                                now="2026-06-19T18:00:00+09:00", timing=_timing("2026-06-18", "2026-06-19"),
+                                trading_day_index=3)
+    return to_canonical(st)
+
+
+DAY1_FIX = build_day1_fixture()
+DAY2_FIX = build_day2_fixture()
+
 
 def build_from(state_dict):
     d = tempfile.mkdtemp()
@@ -120,32 +171,104 @@ def t1_real_day1_maps_ok():
     assert set(out) == set(M.OFFICIAL_PUBLIC_KEYS), out.keys()
 
 
-def t2_summary_values():
+def t2_summary_live_consistency():
+    """live canonical: 거래일 수와 무관하게 summary가 입력 canonical과 일관(동적). seq 고정 단언 없음."""
+    sha_live = hashlib.sha256(Path(M.OFFICIAL_STATE_PATH).read_bytes()).hexdigest()
+    st = load_real()
     s = M.build_magic_official_public(M.OFFICIAL_STATE_PATH)["magicOfficialSummary"]
-    assert s["officialStartDate"] == "2026-06-17" and s["officialSequence"] == 1
-    assert s["dataDate"] == "2026-06-17" and s["latestTradingDate"] == "2026-06-17"
+    completed = [d for d in st["dailyLedger"] if d.get("runStatus") == "COMPLETED"]
+    latest = max(completed, key=lambda d: d["date"])
+    open_batches = [b for b in st["batches"] if b.get("operationMode") == "OFFICIAL" and b.get("status") == "OPEN"]
+    reserves = round(sum(float(b.get("cashReserve") or 0) for b in open_batches), 2)
+    assert s["officialSequence"] == st["officialSequence"]
+    assert s["officialStartDate"] == st["officialStartDate"]
+    assert s["dataDate"] == latest["date"] and s["latestTradingDate"] == latest["date"]
+    assert s["openBatchCount"] == len(open_batches)
+    assert s["openItemLotCount"] == len([l for l in st["itemLots"] if l.get("status") == "OPEN"])
+    assert s["totalBuyCount"] == len(st["buyLedger"]) and s["totalSellCount"] == len(st["sellLedger"])
+    assert s["officialAvailableCash"] == M._won(st["officialAvailableCash"])
+    assert s["totalCash"] == M._won(float(st["officialAvailableCash"]) + reserves)
+    assert s["holdingsMarketValue"] == M._won(latest["holdingsMarketValue"])
+    assert s["totalAsset"] == M._won(latest["totalAsset"])
+    assert s["pilotExcluded"] is True
+    assert s["sourceStateSha256"] == sha_live
+
+
+def t2b_summary_day1_fixture():
+    """고정 day-1 fixture: 1일차 정확값(거래일 증가에 불변)."""
+    s = build_from(DAY1_FIX)["magicOfficialSummary"]
+    assert s["officialSequence"] == 1 and s["officialStartDate"] == "2026-06-17"
+    assert s["latestTradingDate"] == "2026-06-17"
     assert s["openBatchCount"] == 1 and s["openItemLotCount"] == 10 and s["closedBatchCount"] == 0
     assert s["totalBuyCount"] == 10 and s["totalSellCount"] == 0
     assert s["officialAvailableCash"] == 49000000 and s["batchCashReserveTotal"] == 111380
     assert s["totalCash"] == 49111380 and s["holdingsMarketValue"] == 888620 and s["totalAsset"] == 50000000
     assert s["cumulativeReturn"] == 0.0 and s["pilotExcluded"] is True
-    assert s["sourceStateSha256"] == hashlib.sha256(Path(M.OFFICIAL_STATE_PATH).read_bytes()).hexdigest()
 
 
-def t3_portfolio_aggregation():
-    p = M.build_magic_official_public(M.OFFICIAL_STATE_PATH)["magicOfficialPortfolio"]
+def t2c_summary_day2_fixture():
+    """고정 day-2 fixture: 2일차 정확값(batch2 반영)."""
+    s = build_from(DAY2_FIX)["magicOfficialSummary"]
+    assert s["officialSequence"] == 2 and s["officialStartDate"] == "2026-06-17"
+    assert s["latestTradingDate"] == "2026-06-19"
+    assert s["openBatchCount"] == 2 and s["openItemLotCount"] == 20 and s["closedBatchCount"] == 0
+    assert s["totalBuyCount"] == 20 and s["totalSellCount"] == 0
+    assert s["officialAvailableCash"] == 48000000 and s["batchCashReserveTotal"] == 199340
+    assert s["totalCash"] == 48199340 and s["holdingsMarketValue"] == 1761325 and s["totalAsset"] == 49960665
+
+
+def t3_portfolio_live_consistency():
+    """live: OPEN lot이 code별로 집계되고 합계가 summary와 일치(동적)."""
+    out = M.build_magic_official_public(M.OFFICIAL_STATE_PATH)
+    st = load_real()
+    p, s = out["magicOfficialPortfolio"], out["magicOfficialSummary"]
+    open_lots = [l for l in st["itemLots"] if l.get("status") == "OPEN"]
+    codes = sorted({l["code"] for l in open_lots})
+    assert [h["code"] for h in p["holdings"]] == codes
+    for h in p["holdings"]:
+        clots = [l for l in open_lots if l["code"] == h["code"]]
+        assert h["openLotCount"] == len(clots)
+        assert h["totalQuantity"] == sum(int(l["quantity"]) for l in clots)
+    assert sum(h["marketValue"] for h in p["holdings"]) == s["holdingsMarketValue"]
+
+
+def t3b_portfolio_day2_aggregation():
+    """고정 day-2 fixture: 20 lot → 10종목, 종목별 openLotCount=2 및 합산수량/평가/손익 정확."""
+    p = build_from(DAY2_FIX)["magicOfficialPortfolio"]
     assert len(p["holdings"]) == 10
-    assert all(h["openLotCount"] == 1 for h in p["holdings"])
-    assert sum(h["marketValue"] for h in p["holdings"]) == 888620
-    assert all(h["unrealizedProfit"] == 0 and h["returnRate"] == 0.0 for h in p["holdings"])  # day1 eval=buy
+    assert all(h["openLotCount"] == 2 for h in p["holdings"])
+    by = {h["code"]: h for h in p["holdings"]}
+    for c, q in EXPECT_TOTAL_QTY.items():
+        assert by[c]["totalQuantity"] == q, (c, by[c]["totalQuantity"])
+    assert sum(h["marketValue"] for h in p["holdings"]) == 1761325
+    assert sum(h["totalInvested"] for h in p["holdings"]) == 1800660
+    assert sum(h["unrealizedProfit"] for h in p["holdings"]) == -39335
 
 
-def t4_tradedays_groupby():
+def t4_tradedays_live_consistency():
+    """live: tradeDays=dailyLedger(최신순), MISSED_RUN 미포함, 일자별 카운트 일치(동적)."""
     td = M.build_magic_official_public(M.OFFICIAL_STATE_PATH)["magicOfficialTradeDays"]
-    assert len(td) == 1
-    assert td[0]["date"] == "2026-06-17" and td[0]["officialSequence"] == 1
-    assert td[0]["buyCount"] == 10 and td[0]["sellCount"] == 0 and td[0]["totalBuyAmount"] == 888620
-    assert len(td[0]["buys"]) == 10 and len(td[0]["sells"]) == 0
+    st = load_real()
+    daily_dates = sorted([d["date"] for d in st["dailyLedger"]], reverse=True)
+    assert [t["date"] for t in td] == daily_dates
+    missed = {m["date"] for m in (st.get("missedRuns") or [])}
+    assert all(t["date"] not in missed for t in td), "MISSED_RUN이 거래일에 섞이면 안 됨"
+    for t in td:
+        dl = next(d for d in st["dailyLedger"] if d["date"] == t["date"])
+        assert t["officialSequence"] == dl["officialSequence"]
+        assert t["buyCount"] == dl["buyCount"] and t["sellCount"] == dl["sellCount"]
+        assert len(t["buys"]) == dl["buyCount"] and len(t["sells"]) == dl["sellCount"]
+
+
+def t4b_tradedays_day2_fixture():
+    """고정 day-2 fixture: 거래일 2개 최신순, 06-18 MISSED_RUN 미포함."""
+    td = build_from(DAY2_FIX)["magicOfficialTradeDays"]
+    assert len(td) == 2
+    assert td[0]["date"] == "2026-06-19" and td[0]["officialSequence"] == 2
+    assert td[0]["buyCount"] == 10 and td[0]["sellCount"] == 0 and td[0]["totalBuyAmount"] == 912040
+    assert td[1]["date"] == "2026-06-17" and td[1]["officialSequence"] == 1
+    assert td[1]["buyCount"] == 10 and td[1]["sellCount"] == 0 and td[1]["totalBuyAmount"] == 888620
+    assert "2026-06-18" not in [t["date"] for t in td]
 
 
 def t5_buy_detail_fields():
@@ -192,9 +315,13 @@ def t9_holdings_aggregate_same_code():
 
 def t10_pilot_excluded():
     out = M.build_magic_official_public(M.OFFICIAL_STATE_PATH)
+    st = load_real()
     assert out["magicOfficialSummary"]["pilotExcluded"] is True
-    assert out["magicOfficialSummary"]["totalAsset"] == 50000000  # PILOT 889,840 미포함
-    # 공식 거래일/보유에 PILOT(2026-06-08) 흔적 없음
+    # PILOT lotId가 공식 itemLots/보유에 없음(동적)
+    pilot_lots = {l.get("lotId") for l in (st.get("pilot") or {}).get("itemLots") or []}
+    official_lots = {l["lotId"] for l in st["itemLots"]}
+    assert not (pilot_lots & official_lots), "PILOT lot이 공식 lot에 누출"
+    # 공식 거래일/매수에 PILOT(2026-06-08) 흔적 없음
     for d in out["magicOfficialTradeDays"]:
         assert d["date"] != "2026-06-08"
         for b in d["buys"]:
@@ -249,7 +376,9 @@ def t18_integration_additive_merge():
     enriched = {"baseDate": "2026-06-17"}
     out = H.apply_magic_official_public(enriched, state_path=M.OFFICIAL_STATE_PATH, warn=None)
     assert all(k in out for k in M.OFFICIAL_PUBLIC_KEYS)
-    assert out["magicOfficialSummary"]["officialSequence"] == 1
+    st = load_real()
+    assert out["magicOfficialSummary"]["officialSequence"] == st["officialSequence"]
+    assert len(out["magicOfficialTradeDays"]) == len(st["dailyLedger"])
 
 
 def t19_existing_magic5_keys_unchanged():
@@ -300,10 +429,14 @@ def t24_integration_no_file_write():
 
 
 TESTS = [
-    ("1  real 1일차 canonical 정상 매핑", t1_real_day1_maps_ok),
-    ("2  summary 금액·개수 정확성", t2_summary_values),
-    ("3  portfolio 종목별 집계", t3_portfolio_aggregation),
-    ("4  tradeDays 날짜 group-by", t4_tradedays_groupby),
+    ("1  real canonical 정상 매핑(키 존재)", t1_real_day1_maps_ok),
+    ("2  summary live 일관성(동적)", t2_summary_live_consistency),
+    ("2b summary day-1 fixture 정확값", t2b_summary_day1_fixture),
+    ("2c summary day-2 fixture 정확값", t2c_summary_day2_fixture),
+    ("3  portfolio live 일관성(동적)", t3_portfolio_live_consistency),
+    ("3b portfolio day-2 집계(20→10/lot2)", t3b_portfolio_day2_aggregation),
+    ("4  tradeDays live 일관성(MISSED 제외)", t4_tradedays_live_consistency),
+    ("4b tradeDays day-2 fixture(거래일 2)", t4b_tradedays_day2_fixture),
     ("5  BUY 상세 필드 완전성", t5_buy_detail_fields),
     ("6  synthetic 51일차 SELL10/BUY10", t6_synthetic_day51_sell10_buy10),
     ("7  SELL originalBuyDate/Price JOIN", t7_sell_join_original_buy),

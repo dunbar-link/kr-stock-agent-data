@@ -288,7 +288,7 @@ def serialize_canonical(state: dict, receipt: dict) -> dict:
         "buyLedger": state["buyLedger"],
         "sellLedger": state["sellLedger"],
         "dailyLedger": [daily],
-        "evaluationSnapshots": state["evalSnapshots"],
+        "evaluationSnapshots": state.get("evaluationSnapshots") or state.get("evalSnapshots") or [],
         "missedRuns": state["missedRuns"],
         "pilot": state["pilot"],
         "prevTotalAsset": state["prevTotalAsset"],

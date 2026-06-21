@@ -49,6 +49,7 @@ BLOCKED_NO_TRADING_CALENDAR = "BLOCKED_NO_TRADING_CALENDAR"
 BLOCKED_INSUFFICIENT_AVAILABLE_CASH = "BLOCKED_INSUFFICIENT_AVAILABLE_CASH"  # 초기배치: officialAvailableCash < 100만
 BLOCKED_INSUFFICIENT_BATCH_BUDGET = "BLOCKED_INSUFFICIENT_BATCH_BUDGET"      # 10종목 최소1주 > allocatedCapital
 BLOCKED_MULTIPLE_OVERDUE_BATCHES = "BLOCKED_MULTIPLE_OVERDUE_BATCHES"        # 45-E10: due batch 2개 이상 → 자동 일괄매도 금지
+BLOCKED_EVALUATION_SNAPSHOT_ALIAS_CONFLICT = "BLOCKED_EVALUATION_SNAPSHOT_ALIAS_CONFLICT"  # 45-E12.1: 두 키 내용 불일치
 MISSED_RUN = "MISSED_RUN"
 MISSED_RUN_NO_PREOPEN_SIGNAL = "NO_PREOPEN_SIGNAL_PACKAGE"
 PILOT_RUN = "PILOT"
@@ -59,6 +60,30 @@ RANK_FIELDS = ("rank", "combinedRank", "profitabilityRank", "valueRank", "return
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+class EvalSnapshotAliasConflict(Exception):
+    """45-E12.1: evaluationSnapshots와 legacy evalSnapshots 내용이 다를 때."""
+
+
+def normalize_eval_snapshots(st: dict) -> dict:
+    """평가 스냅샷 키를 표준 evaluationSnapshots로 *in-memory* 정규화한다(canonical 파일 미수정).
+    - evaluationSnapshots 있으면 우선. evalSnapshots만 있으면 그것을 evaluationSnapshots로 alias.
+    - 둘 다 있으면 동일 객체/내용이면 OK, 다르면 EvalSnapshotAliasConflict.
+    - 둘 다 없으면 빈 배열. 중복 evalSnapshots 키는 제거(별도 저장 안 함). 입력 dict를 제자리 수정."""
+    std = st.get("evaluationSnapshots")
+    leg = st.get("evalSnapshots")
+    if std is not None and leg is not None:
+        if std is not leg and std != leg:
+            raise EvalSnapshotAliasConflict(
+                "evaluationSnapshots != evalSnapshots (content mismatch)")
+        st["evaluationSnapshots"] = std
+    elif std is None and leg is not None:
+        st["evaluationSnapshots"] = leg
+    elif std is None and leg is None:
+        st["evaluationSnapshots"] = []
+    st.pop("evalSnapshots", None)
+    return st
 
 
 # ----- 거래일 캘린더 (신뢰 가능한 KRX 거래일 set 주입; 평일 추정 금지) -----
@@ -104,7 +129,7 @@ def empty_official_state(initial_capital: int = INITIAL_CAPITAL,
         "buyLedger": [],        # = 거래원장 BUY
         "sellLedger": [],       # = 거래원장 SELL
         "dailyLedger": [],
-        "evalSnapshots": [],    # = evaluationSnapshots
+        "evaluationSnapshots": [],   # 표준 키(45-E12.1). legacy alias=evalSnapshots(읽기만 호환).
         "missedRuns": [],
         "pilot": None,
         "prevTotalAsset": float(initial_capital),
@@ -254,6 +279,12 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
     open_prices = open_prices or {}
     eval_prices = eval_prices or {}
 
+    # 0) 평가 스냅샷 키 정규화(evaluationSnapshots 표준). canonical 직접입력 호환(KeyError 방지).
+    try:
+        st = normalize_eval_snapshots(st)
+    except EvalSnapshotAliasConflict as e:
+        return st, _blocked(date, BLOCKED_EVALUATION_SNAPSHOT_ALIAS_CONFLICT, str(e), now)
+
     # 1) idempotency
     existing = next((d for d in st["dailyLedger"] if d.get("date") == date), None)
     if existing is not None:
@@ -270,7 +301,7 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
         ev = evaluate(st, date, eval_prices)
         led = _daily_ledger(st, date, False, NON_TRADING_DAY, "weekend/holiday", eval_info=ev, now=now)
         st["dailyLedger"].append(led)
-        st["evalSnapshots"].append(ev)
+        st["evaluationSnapshots"].append(ev)
         st["prevTotalAsset"] = ev["totalAsset"]
         return st, led
 
@@ -431,7 +462,7 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
             "lookAheadValidationPassed": timing.get("lookAheadValidationPassed"),
         })
     st["dailyLedger"].append(led)
-    st["evalSnapshots"].append(ev)
+    st["evaluationSnapshots"].append(ev)
     st["prevTotalAsset"] = ev["totalAsset"]
     return st, led
 

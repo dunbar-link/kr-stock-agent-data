@@ -241,14 +241,14 @@ def t12_eval_vs_trade_price_separation():
     eval_px = flat_prices(CODES10, 1100.0)  # 평가가 ↑
     st, res = E.plan_official_day(st, d, mk_ranking(CODES10), buy_px, eval_px, cal, now=NOW)
     assert all(l["buyOpenPrice"] == 1000.0 for l in st["itemLots"]), "매수원장은 거래가(1000) 그대로"
-    ev = st["evalSnapshots"][-1]
+    ev = st["evaluationSnapshots"][-1]
     assert ev["holdingsMarketValue"] == round(1100.0 * 100 * 10, 2), "평가는 평가가(1100)로"
     assert res["holdingsMarketValue"] == ev["holdingsMarketValue"]
     # 평가가 일부 누락 → 매수원장 불변, missingEval만 기록
     st2, _ = E.plan_official_day(st, weekdays("2030-01-02", 2)[1], mk_ranking(CODES10),
                                  buy_px, {c: 1100.0 for c in CODES10[:9]}, cal, now=NOW)
     assert all(l["buyOpenPrice"] == 1000.0 for l in st2["itemLots"]), "평가 실패가 매수원장 변경 안 함"
-    assert st2["evalSnapshots"][-1]["missingEvalCodes"] == [CODES10[9]]
+    assert st2["evaluationSnapshots"][-1]["missingEvalCodes"] == [CODES10[9]]
 
 
 def t13_pilot_migration_plan_no_mutation():

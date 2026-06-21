@@ -81,7 +81,8 @@ def to_canonical(st):
             "initialBatchCapital": st["initialBatchCapital"], "officialSequence": st["officialSequence"],
             "officialTradingCalendar": st["officialTradingCalendar"], "officialAvailableCash": st["officialAvailableCash"],
             "batches": st["batches"], "itemLots": st["itemLots"], "buyLedger": st["buyLedger"],
-            "sellLedger": st["sellLedger"], "dailyLedger": daily, "evaluationSnapshots": st["evalSnapshots"],
+            "sellLedger": st["sellLedger"], "dailyLedger": daily,
+            "evaluationSnapshots": st.get("evaluationSnapshots") or st.get("evalSnapshots") or [],
             "missedRuns": st["missedRuns"], "pilot": mk_pilot_section(), "prevTotalAsset": st["prevTotalAsset"],
             "updatedAt": "2026-06-17T00:00:00+09:00"}
 

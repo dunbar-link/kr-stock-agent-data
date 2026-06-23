@@ -33,6 +33,9 @@ Bash(python scripts/check_magic_preconditions.py*)
 Bash(python scripts/check_magic_dry_run_log.py*)
 Bash(python scripts/run_magic_regression_tests.py*)
 Bash(python scripts/run_magic_full_test_suite.py*)
+Bash(python scripts/magic_daily_signal.py*)
+Bash(python scripts/magic_daily_dry_run.py*)
+Bash(python scripts/magic_daily_status.py*)
 Bash(git status*)
 Bash(git diff*)
 Bash(git log*)
@@ -42,6 +45,10 @@ Bash(python -m py_compile*)
 ```
 - `npx tsc --noEmit` / `npm run build`는 REPO1(webapp) 빌드 검증용. 단 build 후 `next-env.d.ts`가
   변경되면 반드시 `git checkout -- next-env.d.ts`로 원복(자동 허용하더라도 원복 절차는 사람/스크립트가 보장).
+- **A티어 일일 자동화(45-AUTO2)** `magic_daily_signal/dry_run/status.py`는 TEMP signal·log·report만
+  쓰고 canonical/public/REPO1 write 0이라 항상 허용 가능. Task Scheduler(평일 15:40/15:45/16:05,
+  KRX 거래일 self-skip)로도 자동 실행. **단 이 3종에 receipt 생성·apply --confirm·public 반영 기능이
+  섞이면 즉시 항상-허용에서 제외**(그 순간 B/C 티어). 장부 저장 기능과 절대 한 스크립트에 합치지 않는다.
 
 ## [한 번만 허용] 사안별 1회 승인 (always 등록 금지)
 

@@ -480,9 +480,10 @@ def _extract_result_json(txt: str) -> dict:
 
 
 def _parse_pykrx_opens(txt: str) -> dict:
-    m = re.search(r"pykrx_open\s+\d+/\d+:\s*(\{[^{}]*\})", txt)
+    # day-2: "pykrx_open 10/10: {...}" / day-3+: "pykrx_open buy(TOP10) 10/10 · eval(union) 11/11: {...}"
+    m = re.search(r"pykrx_open[^\n]*?(\{[^{}]*\})", txt)
     if not m:
-        raise ReceiptMismatch("dry-run log missing 'pykrx_open N/N: {...}' line")
+        raise ReceiptMismatch("dry-run log missing 'pykrx_open ...: {...}' line")
     raw = ast.literal_eval(m.group(1))
     return {str(k).zfill(6): float(v) for k, v in raw.items()}
 
@@ -538,6 +539,10 @@ def build_execution_receipt_v2(signal_pkg_dir, dry_run_log_path, canonical_path,
             "signalClosePrice": t.get("signalClosePrice"), "marketCap": t.get("marketCap"),
         })
 
+    # 평가가(eval) union: 보유∪TOP10. 로그 pykrx_open 라인의 dict가 곧 dry-run이 쓴 eval_prices다
+    # (day-2는 TOP10과 동일, day-3+는 보유 비-TOP10 종목 포함). 매수는 TOP10(executionPrices)만.
+    eval_prices = [{"code": c, "openPrice": float(op)} for c, op in sorted(opens.items())]
+
     exec_date = res["executionDate"]
     receipt = {
         "schemaVersion": RECEIPT_V2_SCHEMA_VERSION,
@@ -570,6 +575,10 @@ def build_execution_receipt_v2(signal_pkg_dir, dry_run_log_path, canonical_path,
         "canonicalBeforeSha256": _sha_file(canonical_path),
         "approvedTop10": execution_prices,
         "executionPrices": execution_prices,
+        "evalPrices": eval_prices,
+        "holdingsMarketValuePreview": (float(res["holdingsMarketValuePreview"])
+                                       if res.get("holdingsMarketValuePreview") is not None else None),
+        "missingEvalCodes": [str(c).zfill(6) for c in (res.get("missingEvalCodes") or [])],
         "dryRunLogPath": str(dry_run_log_path),
         "sourceDryRunLog": str(dry_run_log_path),
         "dryRunLogSha256": _sha_file(dry_run_log_path),
@@ -626,7 +635,12 @@ def build_official_state_append(receipt: dict, canonical_bytes: bytes):
                 "combinedRank": r["combinedRank"], "profitabilityRank": r["profitabilityRank"],
                 "valueRank": r["valueRank"], "returnOnCapital": r["returnOnCapital"],
                 "earningsYield": r["earningsYield"]} for r in appr]
-    opens = {str(r["code"]): float(r["openPrice"]) for r in appr}
+    opens = {str(r["code"]): float(r["openPrice"]) for r in appr}   # TOP10 (매수)
+    # 평가가: receipt.evalPrices(보유∪TOP10) 우선. 없으면 TOP10 fallback(day-2 호환: 그땐 TOP10=보유).
+    if receipt.get("evalPrices"):
+        eval_opens = {str(e["code"]): float(e["openPrice"]) for e in receipt["evalPrices"]}
+    else:
+        eval_opens = dict(opens)
     cal = E.make_calendar([receipt["signalAsOfDate"], receipt["executionDate"]])
     timing = {
         "signalAsOfDate": receipt["signalAsOfDate"], "rankingGeneratedAt": receipt["rankingGeneratedAt"],
@@ -635,7 +649,7 @@ def build_official_state_append(receipt: dict, canonical_bytes: bytes):
     }
     work = E.migrate_official_state_indices(canon)
     new_state, result = E.plan_official_day(
-        work, receipt["executionDate"], ranking, opens, opens, cal,
+        work, receipt["executionDate"], ranking, opens, eval_opens, cal,
         now=receipt["createdAt"], timing=timing, trading_day_index=int(receipt["buyTradingDayIndex"]))
 
     # --- 승인값 == 엔진 재계산 검증(1원/1주 차이도 BLOCKED) ---
@@ -679,6 +693,17 @@ def build_official_state_append(receipt: dict, canonical_bytes: bytes):
                 f"!= receipt({r['openPrice']}/{r['quantity']}/{r['amount']})")
         if e.get("priceSource") != "pykrx_open":
             raise ReceiptMismatch(f"{r['code']} priceSource != pykrx_open")
+
+    # --- 평가(eval) 재계산이 dry-run preview와 일치하는지(보유 union 가격 적용 검증) ---
+    es = (new_state.get("evaluationSnapshots") or [{}])[-1]
+    if receipt.get("holdingsMarketValuePreview") is not None:
+        if not _approx(es.get("holdingsMarketValue"), receipt["holdingsMarketValuePreview"]):
+            raise ReceiptMismatch(f"holdingsMarketValue {es.get('holdingsMarketValue')} "
+                                  f"!= receipt preview {receipt['holdingsMarketValuePreview']}")
+    rec_missing = {str(c).zfill(6) for c in (receipt.get("missingEvalCodes") or [])}
+    eng_missing = {str(c).zfill(6) for c in (es.get("missingEvalCodes") or [])}
+    if eng_missing != rec_missing:
+        raise ReceiptMismatch(f"missingEvalCodes engine {sorted(eng_missing)} != receipt {sorted(rec_missing)}")
 
     # --- 직전 batch/lot/missed-run/달력 보존 검증(append-only) ---
     for pb in prior_batches:

@@ -413,6 +413,75 @@ def t16_input_canonical_not_mutated_on_block():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _shifted_receipt(prior, *, with_eval=True):
+    """day-N: TOP10=000002..000011(000001 탈락·000011 신규), 보유=000001..000010(batch1).
+    union=000001..000011. evalPrices 포함 여부로 보유-비TOP10(000001) 평가 가능성 검증."""
+    top = [f"{i:06d}" for i in range(2, 12)]
+    union = [f"{i:06d}" for i in range(1, 12)]
+    px = {f"{i:06d}": 1200.0 + i * 11 for i in range(1, 12)}
+    qty_map, total_invested = E.allocate_quantities([{"code": c} for c in top], px, 1_000_000.0)
+    approved = [{"rank": i, "code": c, "name": f"S{c}", "openPrice": px[c], "quantity": int(qty_map[c]),
+                 "amount": round(px[c] * qty_map[c], 2), "combinedRank": i * 2, "profitabilityRank": i,
+                 "valueRank": i, "returnOnCapital": 0.5, "earningsYield": 0.2,
+                 "signalClosePrice": None, "marketCap": None} for i, c in enumerate(top, 1)]
+    r = {
+        "schemaVersion": A.RECEIPT_V2_SCHEMA_VERSION, "receiptType": "OFFICIAL_EXECUTION_RECEIPT",
+        "signalAsOfDate": "2026-06-18", "rankingGeneratedAt": "2026-06-18T18:00:00+09:00",
+        "executionDate": "2026-06-19", "executionMarketOpenAt": "2026-06-19T09:00:00+09:00",
+        "executionPriceSource": "pykrx_open", "lookAheadValidationPassed": True,
+        "formulaVersion": "book-faithful-v1-test",
+        "batchId": "MF-BATCH-2026-06-19", "proposedBatchId": "MF-BATCH-2026-06-19",
+        "sequence": 2, "proposedSequence": 2, "buyTradingDayIndex": 3, "plannedSellTradingDayIndex": 53,
+        "buyCount": 10, "sellCount": 0, "allocatedCapital": 1_000_000.0,
+        "totalInvested": total_invested, "cashReserve": round(1_000_000.0 - total_invested, 2),
+        "officialAvailableCashBefore": 49_000_000.0, "officialAvailableCashAfter": 48_000_000.0,
+        "canonicalBeforeSha256": hashlib.sha256(prior).hexdigest(),
+        "approvedTop10": approved, "executionPrices": approved,
+        "holdingsMarketValuePreview": None, "missingEvalCodes": [],
+        "signalPackageManifestSha256": "0" * 64, "rankingsSha256": "0" * 64, "universeSha256": "0" * 64,
+        "dryRunLogPath": "t.log", "sourceDryRunLog": "t.log", "dryRunLogSha256": "0" * 64,
+        "sourceDryRunExitCode": 0, "productionWriteCountAtDryRun": 0,
+        "officialStartDatePersistedAtDryRun": False, "createdAt": CREATED_AT,
+    }
+    if with_eval:
+        r["evalPrices"] = [{"code": c, "openPrice": px[c]} for c in union]   # 보유∪TOP10
+    r["receiptSha256"] = A.receipt_self_sha(r)
+    return r, px
+
+
+def t17_eval_union_values_held_non_top10():
+    """evalPrices(union)로 보유-비TOP10(000001)이 평가됨 → missingEvalCodes=[], 신규 000011 매수."""
+    root, d = _tmp()
+    try:
+        state, snaps, prior = _setup(root)
+        r, px = _shifted_receipt(prior, with_eval=True)
+        res = A.apply_official_append(r, do_apply=True, confirm=CONFIRM, state_path=state, snapshot_dir=snaps)
+        assert res["status"] == A.APPLIED_APPEND, res
+        st = json.loads(state.read_text(encoding="utf-8"))
+        b2 = {e["code"] for e in st["buyLedger"] if e["batchId"] == "MF-BATCH-2026-06-19"}
+        assert "000011" in b2 and "000001" not in b2          # 신규 매수 O, 탈락종목 매수 X
+        ev = st["evaluationSnapshots"][-1]
+        assert ev["missingEvalCodes"] == []                    # 보유 전체 평가됨
+        held = [p for p in ev["perLot"] if p["code"] == "000001"]
+        assert held and held[0]["currentPrice"] == px["000001"] and held[0]["marketValue"] > 0
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def t18_no_eval_prices_held_non_top10_blocked():
+    """evalPrices 없으면 보유-비TOP10(000001)이 평가 누락→eng missingEvalCodes≠receipt[] →BLOCKED(변경 0)."""
+    root, d = _tmp()
+    try:
+        state, snaps, prior = _setup(root)
+        h0 = _hash(state)
+        r, _ = _shifted_receipt(prior, with_eval=False)        # evalPrices 누락 → TOP10만 평가
+        res = A.apply_official_append(r, do_apply=True, confirm=CONFIRM, state_path=state, snapshot_dir=snaps)
+        assert res["status"] == A.BLOCKED_RECEIPT_PLAN_MISMATCH, res
+        assert _hash(state) == h0 and not (snaps / "2026-06-19.json").exists()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 TESTS = [
     ("1  day2 append 정상(seq2/batch2/idx3)", t1_append_apply_ok),
     ("2  officialSequence/index/달력 append", t2_seq_and_index_and_calendars),
@@ -430,6 +499,8 @@ TESTS = [
     ("14 dry-run(do_apply=False)→저장0", t14_dry_run_no_write),
     ("15 public mapper가 batch2 장부 읽음", t15_public_mapper_reads_day2),
     ("16 BLOCKED 시 canonical 불변", t16_input_canonical_not_mutated_on_block),
+    ("17 evalPrices union→보유-비TOP10 평가", t17_eval_union_values_held_non_top10),
+    ("18 evalPrices 누락+보유-비TOP10→BLOCKED", t18_no_eval_prices_held_non_top10_blocked),
 ]
 
 

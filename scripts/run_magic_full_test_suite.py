@@ -32,6 +32,10 @@ FULL_SUITE = [
     "test_magic_daily_signal.py",
     "test_magic_daily_dry_run.py",
     "test_magic_daily_status.py",
+    "test_magic_approval_ticket.py",
+    "test_magic_apply_from_approval.py",
+    "test_magic_publish_public.py",
+    "test_magic_live_verify.py",
 ]
 
 _SUMMARY_RE = re.compile(r"(\d+)\s*passed,\s*(\d+)\s*failed")

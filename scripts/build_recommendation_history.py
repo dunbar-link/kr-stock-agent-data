@@ -84,6 +84,8 @@ _PUBLIC_TOP_ALLOW = {
     "magicFundPolicy", "magicFormula",
     # Phase 45-E8.1: OFFICIAL 장부 public 매핑(additive; PILOT 5키와 분리)
     "magicOfficialSummary", "magicOfficialPortfolio", "magicOfficialTradeDays",
+    # UI 개선 2차: 성과분석 "넘긴 종목" 카운트가 배포에서도 맞도록 제외 코드 목록 공개(코드 배열만, 민감정보 없음).
+    "reviewedCandidateCodes",
 }
 
 # Phase 45-E8.1: OFFICIAL canonical 장부 경로(읽기 전용 매핑 입력)

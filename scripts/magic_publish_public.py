@@ -4,12 +4,14 @@
 canonical(read-only) → public 3키(magicOfficialSummary·magicOfficialPortfolio·magicOfficialTradeDays)를
 파생하고, REPO1 public(recommendation-history.json)에 *그 3키만* 표적 갱신한다.
 - 매핑은 build_magic_official_public 재사용(복제 0). 와바바/AI/PILOT 등 나머지 키는 절대 건드리지 않는다.
-- mode=plan: write 0. 현재 canonical seq vs REPO1 public seq 차이·바뀔 3키 요약·표적 파일·필요 승인만 보고.
-- mode=apply: 승인된 PUBLIC_PUBLISH ticket + REPO1 clean + drift 0(3키 외 변경 0)일 때만 표적 갱신.
-- ★ 이번 Phase에서 실제 REPO1 파일은 수정하지 않는다(plan/검증·테스트 fixture만). git push·deploy 범위 밖.
+- mode=plan: write 0. 현재 canonical seq vs REPO1 public seq 차이·바뀔 3키 요약·표적 파일·confirm 토큰 보고.
+- mode=apply: 명시 confirm(PUBLISH_MAGIC_PUBLIC_<dataDate>) + REPO1 clean + canonical SHA 정합 + drift 0(3키 외
+  변경 0)이 *모두* 통과할 때만 REPO1 public/data 3키 표적 갱신. confirm 없음/오타 → BLOCKED, write 0.
+- git add/commit/push·Vercel deploy는 범위 밖(사람 직접). 실제 주문 없음.
 
 예) python scripts/magic_publish_public.py --mode plan
-    python scripts/magic_publish_public.py --mode plan --json
+    python scripts/magic_publish_public.py --mode apply --verify-only --confirm PUBLISH_MAGIC_PUBLIC_2026-06-25  # 게이트만(write 0)
+    python scripts/magic_publish_public.py --mode apply --confirm PUBLISH_MAGIC_PUBLIC_2026-06-25               # 실제 3키 반영
 """
 from __future__ import annotations
 
@@ -103,7 +105,8 @@ def build_plan(public_model: dict, repo1_doc: dict, *, repo1_path, canonical_sha
         "repo1TargetFile": str(repo1_path),
         "canonicalSha256": (canonical_sha or "")[:16],
         "publicModelSummarySha256": summary.get("sourceStateSha256", "")[:16],
-        "requiredApproval": "PUBLIC_PUBLISH ticket(사람 승인) + REPO1 clean + drift 0",
+        "confirmToken": f"PUBLISH_MAGIC_PUBLIC_{summary.get('dataDate')}",
+        "requiredApproval": "명시 confirm(PUBLISH_MAGIC_PUBLIC_<dataDate>) + REPO1 clean + canonical SHA 정합 + drift 0",
         "productionWriteCount": 0, "publicCopyCount": 0, "canonicalChanged": False, "publicChanged": False,
         "createdAt": now or _now_iso(),
     }
@@ -139,28 +142,23 @@ def _compute_drift(repo1_doc: dict, public_model: dict):
     return new_doc, None
 
 
-def apply(ticket: dict, *, canonical_path=CANONICAL_PATH, repo1_path=REPO1_PUBLIC_PATH,
+def expected_confirm_token(public_model: dict) -> str:
+    """canonical dataDate 기반 confirm 토큰. 예: PUBLISH_MAGIC_PUBLIC_2026-06-25."""
+    data_date = (public_model.get("magicOfficialSummary") or {}).get("dataDate")
+    return f"PUBLISH_MAGIC_PUBLIC_{data_date}"
+
+
+def apply(*, canonical_path=CANONICAL_PATH, repo1_path=REPO1_PUBLIC_PATH, confirm: str = "",
           git_status_fn=None, do_write: bool = False, now=None) -> dict:
-    """승인된 PUBLIC_PUBLISH ticket 기반 표적 갱신. 승인/clean/drift 게이트 전부 통과 시만.
-    do_write=False(기본)면 검증까지만(REPO1 write 0). ★ 이번 Phase는 do_write=False로만 사용."""
+    """confirm 게이트 기반 public 3키 표적 갱신. 아래 게이트가 *모두* 통과할 때만 REPO1 public/data write.
+      1) confirm == PUBLISH_MAGIC_PUBLIC_<canonical dataDate>  (없으면 BLOCKED_CONFIRM_REQUIRED, 오타면 _MISMATCH)
+      2) REPO1 public working tree clean
+      3) canonical SHA == public model sourceStateSha256 (모델이 현재 canonical 파생)
+      4) updateNeeded(magicOfficial 3키 차이 존재) · drift 0(3키 외 보존)
+    do_write=False면 게이트 검증까지만(REPO1 write 0). do_write=True일 때만 실제 atomic write."""
     now = now or _now_iso()
     git_status_fn = git_status_fn or (lambda: _git_status_porcelain(REPO1_ROOT))
     mode = "apply"
-
-    if (ticket or {}).get("actionType") != "PUBLIC_PUBLISH":
-        return _blocked("BLOCKED_TICKET_NOT_APPROVED", mode, "ticket.actionType != PUBLIC_PUBLISH", now=now)
-    approval = (ticket or {}).get("approval") or {}
-    if ticket.get("status") != "APPROVED" or approval.get("approved") is not True:
-        return _blocked("BLOCKED_TICKET_NOT_APPROVED", mode,
-                        f"ticket not APPROVED (status={ticket.get('status')}, approved={approval.get('approved')})",
-                        now=now, recommended_fix="사람이 PUBLIC_PUBLISH ticket 승인 후 재실행")
-
-    porcelain = git_status_fn()
-    if _repo1_dirty_for_public(porcelain, repo1_path):
-        return _blocked("BLOCKED_REPO1_NOT_CLEAN", mode,
-                        "REPO1 public 파일이 이미 변경/스테이지 상태(자동 덮어쓰기 금지)",
-                        evidence=[str(repo1_path)], now=now,
-                        recommended_fix="REPO1 working tree 정리 후 재시도")
 
     try:
         public_model = P.build_magic_official_public(state_path=canonical_path)
@@ -171,26 +169,59 @@ def apply(ticket: dict, *, canonical_path=CANONICAL_PATH, repo1_path=REPO1_PUBLI
     except (OSError, ValueError) as e:
         return _blocked("BLOCKED_PUBLIC_MODEL_INVALID", mode, f"REPO1 read error: {e}", now=now)
 
+    summary_model = public_model.get("magicOfficialSummary") or {}
+    canon_seq = summary_model.get("officialSequence")
+    repo1_seq = (repo1_doc.get("magicOfficialSummary") or {}).get("officialSequence")
+    expected = expected_confirm_token(public_model)
+
+    # 1) confirm 게이트 — write 전 최우선(실수 방지)
+    if not confirm:
+        return {**_blocked("BLOCKED_CONFIRM_REQUIRED", mode,
+                           f"--confirm 필요(기대 '{expected}')", now=now), "expectedConfirm": expected}
+    if confirm != expected:
+        return {**_blocked("BLOCKED_CONFIRM_MISMATCH", mode,
+                           f"--confirm 불일치(기대 '{expected}')", now=now), "expectedConfirm": expected}
+
+    # 2) REPO1 clean
+    if _repo1_dirty_for_public(git_status_fn(), repo1_path):
+        return _blocked("BLOCKED_REPO1_NOT_CLEAN", mode,
+                        "REPO1 public 파일이 이미 변경/스테이지 상태(자동 덮어쓰기 금지)",
+                        evidence=[str(repo1_path)], now=now,
+                        recommended_fix="REPO1 working tree 정리 후 재시도")
+
+    # 3) canonical SHA 정합(모델이 현재 canonical에서 파생됐는지)
+    canon_sha = _sha_file(canonical_path)
+    model_sha = summary_model.get("sourceStateSha256")
+    if canon_sha and model_sha and canon_sha != model_sha:
+        return _blocked("BLOCKED_CANONICAL_SHA_MISMATCH", mode,
+                        "canonical SHA != public model sourceStateSha256", now=now)
+
+    # 4) updateNeeded / drift
+    changed_keys = [k for k in OFFICIAL_PUBLIC_KEYS if repo1_doc.get(k) != public_model.get(k)]
+    if not changed_keys:
+        return {"status": "ALREADY_CURRENT", "stage": "PUBLISH_PUBLIC", "mode": mode,
+                "currentCanonicalSeq": canon_seq, "currentRepo1PublicSeq": repo1_seq,
+                "changedKeys": [], "productionWriteCount": 0, "publicCopyCount": 0,
+                "canonicalChanged": False, "publicChanged": False,
+                "reason": "public already current (no magicOfficial change)", "createdAt": now}
     new_doc, drift = _compute_drift(repo1_doc, public_model)
     if drift is not None:
         return _blocked("BLOCKED_PUBLIC_DRIFT", mode, drift, now=now)
 
-    changed_keys = [k for k in OFFICIAL_PUBLIC_KEYS if repo1_doc.get(k) != public_model.get(k)]
-    summary = {
-        "status": "PUBLISH_VERIFIED" if not do_write else "PUBLISHED",
-        "stage": "PUBLISH_PUBLIC", "mode": mode, "ticketId": ticket.get("ticketId"),
+    base = {
+        "stage": "PUBLISH_PUBLIC", "mode": mode, "confirm": confirm,
+        "currentCanonicalSeq": canon_seq, "currentRepo1PublicSeq": repo1_seq,
         "changedKeys": changed_keys, "keysToUpdate": OFFICIAL_PUBLIC_KEYS,
         "repo1TargetFile": str(repo1_path), "untouchedKeyCount": len(repo1_doc) - len(OFFICIAL_PUBLIC_KEYS),
-        "canonicalSha256": (_sha_file(canonical_path) or "")[:16],
-        "productionWriteCount": 0, "publicCopyCount": 0,
-        "canonicalChanged": False, "publicChanged": False, "createdAt": now,
+        "canonicalSha256": (canon_sha or "")[:16], "canonicalChanged": False, "createdAt": now,
     }
     if not do_write:
-        summary["reason"] = "verified; no write (이번 Phase 정책: REPO1 미수정)"
-        return summary
+        return {**base, "status": "PUBLISH_VERIFIED", "productionWriteCount": 0, "publicCopyCount": 0,
+                "publicChanged": False, "reason": "confirm·clean·sha·drift 게이트 통과(검증만, write 0)"}
 
-    # do_write=True 경로(AUTO4 이후): atomic write + 재읽기로 3키 외 불변 재검증
+    # do_write=True: atomic write + 재읽기로 3키 외 불변 재검증
     import os
+    before_sha = _sha_file(repo1_path)
     data = json.dumps(new_doc, ensure_ascii=False, indent=2).encode("utf-8")
     tmp = Path(repo1_path).with_name(Path(repo1_path).name + ".tmp")
     tmp.write_bytes(data)
@@ -201,17 +232,21 @@ def apply(ticket: dict, *, canonical_path=CANONICAL_PATH, repo1_path=REPO1_PUBLI
     for k in repo1_doc.keys():
         if k not in OFFICIAL_PUBLIC_KEYS and after[k] != repo1_doc[k]:
             return _blocked("BLOCKED_PUBLIC_DRIFT", mode, f"post-write untouched key drift: {k}", now=now)
-    summary.update({"publicChanged": True, "publicCopyCount": 1})
-    summary["reason"] = "REPO1 public magicOfficial 3키 표적 갱신 완료"
-    return summary
+    after_seq = (after.get("magicOfficialSummary") or {}).get("officialSequence")
+    return {**base, "status": "PUBLISHED", "productionWriteCount": 0, "publicCopyCount": 1,
+            "publicChanged": True, "publicSeqBefore": repo1_seq, "publicSeqAfter": after_seq,
+            "beforeSha256": (before_sha or "")[:16], "afterSha256": (_sha_file(repo1_path) or "")[:16],
+            "reason": "REPO1 public magicOfficial 3키 표적 갱신 완료"}
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="마법공식 public 반영 plan/apply (plan write 0; 이번 Phase apply 미실행)")
+    ap = argparse.ArgumentParser(description="마법공식 public 반영 plan/apply (plan write 0; apply는 confirm 게이트)")
     ap.add_argument("--mode", default="plan", choices=("plan", "apply"))
     ap.add_argument("--canonical-path", default=str(CANONICAL_PATH))
     ap.add_argument("--repo1-path", default=str(REPO1_PUBLIC_PATH))
-    ap.add_argument("--ticket", default=None, help="mode=apply 전용 PUBLIC_PUBLISH ticket 경로")
+    ap.add_argument("--confirm", default="", help="mode=apply 전용: PUBLISH_MAGIC_PUBLIC_<canonical dataDate>")
+    ap.add_argument("--verify-only", action="store_true",
+                    help="apply 게이트만 검증하고 write 0(REPO1 미수정). 실 반영 전 점검용")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     now = _now_iso()
@@ -219,18 +254,10 @@ def main(argv=None) -> int:
     if args.mode == "plan":
         r = plan(Path(args.canonical_path), Path(args.repo1_path), now=now)
     else:
-        # 이번 Phase: apply는 검증까지만(do_write=False 강제). 실제 REPO1 수정은 사람 직접 + AUTO4.
-        if not args.ticket:
-            r = _blocked("BLOCKED_TICKET_NOT_APPROVED", "apply", "PUBLIC_PUBLISH ticket 경로 필요", now=now)
-        else:
-            try:
-                ticket = json.loads(Path(args.ticket).read_text(encoding="utf-8"))
-            except (OSError, ValueError) as e:
-                ticket = None
-                r = _blocked("BLOCKED_TICKET_NOT_APPROVED", "apply", f"ticket read error: {e}", now=now)
-            if ticket is not None:
-                r = apply(ticket, canonical_path=Path(args.canonical_path),
-                          repo1_path=Path(args.repo1_path), do_write=False, now=now)
+        # apply: confirm 일치 + clean + sha + drift 0 전부 통과 시에만 REPO1 public/data write.
+        # --verify-only면 게이트만 확인(write 0).
+        r = apply(canonical_path=Path(args.canonical_path), repo1_path=Path(args.repo1_path),
+                  confirm=args.confirm, do_write=not args.verify_only, now=now)
 
     if args.json:
         print(json.dumps(r, ensure_ascii=False, indent=2))
@@ -244,7 +271,7 @@ def main(argv=None) -> int:
             print(f"  changedKeys={r['changedKeys']} untouched={r['untouchedKeyCount']} target={r['repo1TargetFile']}")
         else:
             print(f"[PUBLISH {args.mode}] {r['status']} {r.get('blockedCode','')} {r.get('reason','')}")
-    return 0 if r["status"] in ("PLAN_OK", "PUBLISH_VERIFIED", "PUBLISHED") else 2
+    return 0 if r["status"] in ("PLAN_OK", "PUBLISH_VERIFIED", "PUBLISHED", "ALREADY_CURRENT") else 2
 
 
 if __name__ == "__main__":

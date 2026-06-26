@@ -36,10 +36,7 @@ def _patch_model(model=MODEL):
     PUB.P.build_magic_official_public = lambda state_path=None: model
 
 
-def _ticket(status="APPROVED", approved=True):
-    return {"schemaVersion": "magic-approval-ticket-v1", "ticketId": "MF-APPROVAL-2026-06-25-PUBLIC_PUBLISH",
-            "actionType": "PUBLIC_PUBLISH", "status": status, "executionDate": "2026-06-25",
-            "approval": {"approved": approved, "approvalPhrase": "APPROVE_PUBLIC_PUBLISH_2026-06-25"}}
+CONFIRM = "PUBLISH_MAGIC_PUBLIC_2026-06-25"   # MODEL.magicOfficialSummary.dataDate 기준
 
 
 # ===== 테스트 =====
@@ -69,23 +66,38 @@ def t19_plan_write0():
         shutil.rmtree(root, ignore_errors=True)
 
 
-def t20_apply_no_approval_blocked():
+def t20_apply_no_confirm_blocked():
     root = Path(tempfile.mkdtemp())
     try:
         _patch_model()
         repo1 = root / "recommendation-history.json"
         repo1.write_text(json.dumps(_repo1()), encoding="utf-8")
         before = repo1.read_bytes()
-        r = PUB.apply(_ticket(status="PENDING_APPROVAL", approved=False),
-                      canonical_path=root / "canon.json", repo1_path=repo1,
-                      git_status_fn=lambda: "", do_write=False, now=NOW)
-        assert r["status"] == "BLOCKED" and r["blockedCode"] == "BLOCKED_TICKET_NOT_APPROVED", r
+        r = PUB.apply(canonical_path=root / "canon.json", repo1_path=repo1,
+                      confirm="", git_status_fn=lambda: "", do_write=True, now=NOW)
+        assert r["status"] == "BLOCKED" and r["blockedCode"] == "BLOCKED_CONFIRM_REQUIRED", r
+        assert r["expectedConfirm"] == CONFIRM
         assert repo1.read_bytes() == before and r["publicChanged"] is False
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def t21_apply_repo1_dirty_blocked():
+def t21_apply_confirm_mismatch_blocked():
+    root = Path(tempfile.mkdtemp())
+    try:
+        _patch_model()
+        repo1 = root / "recommendation-history.json"
+        repo1.write_text(json.dumps(_repo1()), encoding="utf-8")
+        before = repo1.read_bytes()
+        r = PUB.apply(canonical_path=root / "canon.json", repo1_path=repo1,
+                      confirm="PUBLISH_MAGIC_PUBLIC_2026-06-24", git_status_fn=lambda: "", do_write=True, now=NOW)
+        assert r["status"] == "BLOCKED" and r["blockedCode"] == "BLOCKED_CONFIRM_MISMATCH", r
+        assert repo1.read_bytes() == before and r["publicChanged"] is False
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def t23_apply_repo1_dirty_blocked():
     root = Path(tempfile.mkdtemp())
     try:
         _patch_model()
@@ -93,10 +105,35 @@ def t21_apply_repo1_dirty_blocked():
         repo1.write_text(json.dumps(_repo1()), encoding="utf-8")
         before = repo1.read_bytes()
         dirty = lambda: " M recommendation-history.json\n"
-        r = PUB.apply(_ticket(), canonical_path=root / "canon.json", repo1_path=repo1,
-                      git_status_fn=dirty, do_write=False, now=NOW)
+        r = PUB.apply(canonical_path=root / "canon.json", repo1_path=repo1,
+                      confirm=CONFIRM, git_status_fn=dirty, do_write=True, now=NOW)
         assert r["status"] == "BLOCKED" and r["blockedCode"] == "BLOCKED_REPO1_NOT_CLEAN", r
         assert repo1.read_bytes() == before
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def t24_apply_do_write_temp_copy():
+    """temp copy 기반 실제 write: confirm 일치 + clean → 3키만 갱신, 22키 보존, seq 3→4."""
+    root = Path(tempfile.mkdtemp())
+    try:
+        _patch_model()
+        repo1 = root / "recommendation-history.json"
+        doc = _repo1(seq=3)
+        repo1.write_text(json.dumps(doc), encoding="utf-8")
+        r = PUB.apply(canonical_path=root / "canon.json", repo1_path=repo1,
+                      confirm=CONFIRM, git_status_fn=lambda: "", do_write=True, now=NOW)
+        assert r["status"] == "PUBLISHED", r
+        assert r["publicChanged"] is True and r["publicCopyCount"] == 1
+        assert sorted(r["changedKeys"]) == sorted(PUB.OFFICIAL_PUBLIC_KEYS)
+        assert r["publicSeqBefore"] == 3 and r["publicSeqAfter"] == 4
+        after = json.loads(repo1.read_text(encoding="utf-8"))
+        # 3키만 MODEL로 갱신
+        assert after["magicOfficialSummary"]["officialSequence"] == 4
+        # 나머지 키 보존(불변)
+        for k in ("magicPortfolioSummary", "wababaFund", "wababaAiFund", "recommendations", "generatedAt"):
+            assert after[k] == doc[k], k
+        assert set(after.keys()) == set(doc.keys())
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -119,9 +156,11 @@ def t22_only_three_keys_targeted():
 TESTS = [
     ("18 plan: canonical seq vs REPO1 seq 차이 감지", t18_plan_detects_seq_diff),
     ("19 plan write 0(REPO1 불변)", t19_plan_write0),
-    ("20 apply 승인 없음 → BLOCKED(불변)", t20_apply_no_approval_blocked),
-    ("21 apply REPO1 dirty → BLOCKED(불변)", t21_apply_repo1_dirty_blocked),
+    ("20 apply confirm 없음 → BLOCKED_CONFIRM_REQUIRED(불변)", t20_apply_no_confirm_blocked),
+    ("21 apply confirm 오타 → BLOCKED_CONFIRM_MISMATCH(불변)", t21_apply_confirm_mismatch_blocked),
     ("22 magicOfficial 3키만 변경 대상", t22_only_three_keys_targeted),
+    ("23 apply REPO1 dirty → BLOCKED_REPO1_NOT_CLEAN(불변)", t23_apply_repo1_dirty_blocked),
+    ("24 apply do_write(temp): 3키 갱신·22키 보존·seq3→4", t24_apply_do_write_temp_copy),
 ]
 
 

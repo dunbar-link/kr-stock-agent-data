@@ -114,20 +114,23 @@ def _ranking_from_doc(rankings_doc: dict) -> list:
 # ===== KRX 거래일 캘린더 (pykrx 실거래일; 평일 추정 금지) =====
 
 def build_krx_calendar(operation_date: str, pykrx_stock=None):
-    """pykrx.stock.get_business_days로 해당 월 실거래일을 받아 engine.make_calendar 생성.
+    """pykrx.stock.get_business_days로 실거래일을 받아 engine.make_calendar 생성.
+    월 첫 거래일의 직전 거래일(전월 마지막 거래일) 탐색을 위해 operation_date의 당월과 전월을 함께 로드한다.
     실패/빈 결과 → None(=engine이 BLOCKED_NO_TRADING_CALENDAR 처리). pykrx_stock 주입 시 테스트 mock."""
     try:
         if pykrx_stock is None:
             from pykrx import stock as pykrx_stock  # lazy: import 시 network 회피
         y, m = int(operation_date[:4]), int(operation_date[5:7])
-        bdays = pykrx_stock.get_business_days(y, m)
+        prev_y, prev_m = (y - 1, 12) if m == 1 else (y, m - 1)
         days = []
-        for d in (bdays or []):
-            s = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-            days.append(s)
+        for (yy, mm) in ((prev_y, prev_m), (y, m)):  # 전월 → 당월(월경계 직전거래일 확보)
+            bdays = pykrx_stock.get_business_days(yy, mm)
+            for d in (bdays or []):
+                s = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+                days.append(s)
         if not days:
             return None
-        return E.make_calendar(days)
+        return E.make_calendar(days)  # make_calendar가 set/sort로 중복 제거·정렬
     except Exception:
         return None
 

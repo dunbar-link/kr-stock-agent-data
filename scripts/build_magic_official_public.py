@@ -280,6 +280,20 @@ def build_trade_days(st: dict) -> list:
                 "executionPrice": _won(e["executionPrice"]), "quantity": int(e["quantity"]),
                 "amount": _won(e["amount"]), "signalAsOfDate": e.get("signalAsOfDate"),
                 "executionDate": e.get("executionDate"), "priceSource": e.get("priceSource"),
+                # --- MF-PUBLIC-1B(C안): 공식 근거 요약을 rankSnapshot evidence에서 파생(값 복사만).
+                # 과거 seq(1~11) lot은 evidence 없음 → rs.get()이 None → 필드는 항상 존재하되 값만 null. ---
+                "finalRank": rs.get("rank"),
+                "cheapRank": rs.get("valueRank"),
+                "qualityRank": rs.get("profitabilityRank"),
+                "magicScore": rs.get("combinedRank"),
+                "earningsYield": rs.get("earningsYield"),
+                "returnOnCapital": rs.get("returnOnCapital"),
+                "closePrice": rs.get("closePrice"),
+                "priceAsOfDate": rs.get("priceAsOfDate"),
+                "financialStatementYear": rs.get("financialStatementYear"),
+                "dartFsDiv": rs.get("dartFsDiv"),
+                "evMethod": rs.get("evMethod"),
+                "evidenceCompleteness": rs.get("evidenceCompleteness"),
             })
         buys.sort(key=lambda b: (b["rank"] if b["rank"] is not None else 1e9, b["code"]))
         sells_raw = _by_date_sells(st, date)

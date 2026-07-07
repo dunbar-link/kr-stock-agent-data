@@ -428,6 +428,63 @@ def t24_integration_no_file_write():
     assert before == after, "integration 함수가 어떤 public 파일도 쓰지 않아야 함"
 
 
+# ----- MF-PUBLIC-1B: buys[] evidence 노출(C안) -----
+
+_EV_META = {"evMethod": "marketCap_plus_totalLiabilities_minus_cash", "closePrice": 1000.0,
+            "priceAsOfDate": "2026-01-05", "financialStatementYear": 2025, "dartFsDiv": "CFS",
+            "evidenceCompleteness": True}
+
+
+def _with_evidence(state_dict):
+    """최신 거래일 buy lot rankSnapshot에 evidence 전용 메타를 주입한 canonical 사본(테스트용)."""
+    st = copy.deepcopy(state_dict)
+    latest = max(d["date"] for d in st["dailyLedger"])
+    for coll in (st["itemLots"], st["buyLedger"]):
+        for row in coll:
+            if row.get("date") == latest or row.get("buyDate") == latest:
+                snap = row.get("rankSnapshot")
+                if isinstance(snap, dict):
+                    snap.update(_EV_META)
+    return st
+
+
+def t25_buys_evidence_exposed_and_mapped():
+    """evidence 있는 canonical → 최신 거래일 buys에 evidence 필드가 노출되고 명칭 매핑이 정확하다."""
+    td = build_from(_with_evidence(STATE3))["magicOfficialTradeDays"]
+    buys = td[0]["buys"]
+    assert buys, "buys 비어있음"
+    for b in buys:
+        # 명칭 매핑(mk_ranking: valueRank=profitabilityRank=rank, combinedRank=rank*2)
+        assert b["cheapRank"] == b["rank"] and b["qualityRank"] == b["rank"]
+        assert b["magicScore"] == b["rank"] * 2 and b["finalRank"] == b["rank"]
+        assert b["earningsYield"] == 0.2 and b["returnOnCapital"] == 0.5
+        # evidence 전용 메타
+        assert b["evMethod"] == "marketCap_plus_totalLiabilities_minus_cash"
+        assert b["evidenceCompleteness"] is True
+        assert b["financialStatementYear"] == 2025 and b["dartFsDiv"] == "CFS"
+        assert b["priceAsOfDate"] == "2026-01-05" and b["closePrice"] == 1000.0
+
+
+def t26_past_seq_buys_evidence_null_backcompat():
+    """evidence 없는 과거 canonical → buys의 evidence 전용 메타는 null, 순위/점수/비율은 값 유지(하위호환)."""
+    buys = build_from(STATE3)["magicOfficialTradeDays"][0]["buys"]
+    assert buys, "buys 비어있음"
+    for b in buys:
+        # 순위/점수/비율은 랭크필드라 과거에도 값 존재
+        assert b["cheapRank"] is not None and b["qualityRank"] is not None
+        assert b["magicScore"] is not None and b["earningsYield"] is not None
+        # evidence 전용 메타는 과거 seq에서 null(키는 항상 존재)
+        for k in ("evMethod", "closePrice", "priceAsOfDate", "financialStatementYear",
+                  "dartFsDiv", "evidenceCompleteness"):
+            assert k in b and b[k] is None, (k, b.get(k))
+
+
+def t27_three_public_keys_unchanged_with_evidence():
+    """evidence 확장 후에도 public top-level key는 정확히 3키(구조 계약 불변)."""
+    out = build_from(_with_evidence(STATE3))
+    assert set(out) == set(M.OFFICIAL_PUBLIC_KEYS), out.keys()
+
+
 TESTS = [
     ("1  real canonical 정상 매핑(키 존재)", t1_real_day1_maps_ok),
     ("2  summary live 일관성(동적)", t2_summary_live_consistency),
@@ -457,6 +514,9 @@ TESTS = [
     ("22 canonical 없음 시 기존 생성 정상", t22_missing_canonical_keeps_others),
     ("23 allowlist 신규 3키 포함", t23_allowlist_has_official_keys),
     ("24 integration public 파일 쓰기 0", t24_integration_no_file_write),
+    ("25 buys evidence 노출+명칭매핑 정확", t25_buys_evidence_exposed_and_mapped),
+    ("26 과거 seq buys evidence null 하위호환", t26_past_seq_buys_evidence_null_backcompat),
+    ("27 evidence 확장 후에도 public 3키 불변", t27_three_public_keys_unchanged_with_evidence),
 ]
 
 

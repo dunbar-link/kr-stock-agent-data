@@ -537,6 +537,14 @@ def build_execution_receipt_v2(signal_pkg_dir, dry_run_log_path, canonical_path,
             "valueRank": t.get("valueRank"), "returnOnCapital": t.get("returnOnCapital"),
             "earningsYield": t.get("earningsYield"),
             "signalClosePrice": t.get("signalClosePrice"), "marketCap": t.get("marketCap"),
+            # --- MF-SCHEMA-1B: 공식 근거 원값(TEMP rankings.json top10에 이미 존재; dict.get 복사만, 재계산 0) ---
+            "EBIT": t.get("EBIT"), "enterpriseValue": t.get("enterpriseValue"),
+            "capitalBase": t.get("capitalBase"), "currentAssets": t.get("currentAssets"),
+            "currentLiabilities": t.get("currentLiabilities"),
+            "propertyPlantAndEquipment": t.get("propertyPlantAndEquipment"),
+            "totalLiabilities": t.get("totalLiabilities"),
+            "cashAndCashEquivalents": t.get("cashAndCashEquivalents"),
+            "evMethod": t.get("evMethod"), "dataSource": t.get("dataSource"),
         })
 
     # 평가가(eval) union: 보유∪TOP10. 로그 pykrx_open 라인의 dict가 곧 dry-run이 쓴 eval_prices다
@@ -559,6 +567,7 @@ def build_execution_receipt_v2(signal_pkg_dir, dry_run_log_path, canonical_path,
         "executionPriceSource": "pykrx_open",
         "lookAheadValidationPassed": True,
         "formulaVersion": man["formulaVersion"],
+        "formulaMode": man.get("formulaMode"),   # MF-SCHEMA-1B: lot evidence용(복사만)
         "batchId": res["proposedBatchId"],
         "proposedBatchId": res["proposedBatchId"],
         "sequence": int(res["proposedSequence"]),
@@ -613,6 +622,80 @@ def verify_receipt_v2(receipt: dict):
                    receipt["allocatedCapital"]):
         return False, "availCashBefore - availCashAfter != allocatedCapital"
     return True, "ok"
+
+
+# ===== MF-SCHEMA-1B: 공식 근거 원값(evidence) additive 영속화 =====
+
+def _parse_data_source(s):
+    """dataSource 문자열('DART 2025 CFS')을 (year:int|None, fsDiv:str|None)로 안전 파싱.
+    형식이 애매하면 (None, None) — dataSource 원문은 별도 보존한다."""
+    if not isinstance(s, str):
+        return None, None
+    parts = s.split()
+    if (len(parts) == 3 and parts[0] == "DART" and parts[1].isdigit()
+            and len(parts[1]) == 4 and parts[2] in ("CFS", "OFS")):
+        return int(parts[1]), parts[2]
+    return None, None
+
+
+# rankSnapshot에 이미 있는 6개 랭크필드(엔진 RANK_FIELDS)는 evidence에서 다루지 않는다(의미 불변).
+_EVIDENCE_REQUIRED = ("ebit", "enterpriseValue", "investedCapital", "currentAssets",
+                      "currentLiabilities", "propertyPlantAndEquipment",
+                      "totalLiabilities", "cashAndCashEquivalents")
+
+
+def build_lot_evidence(r: dict, receipt: dict) -> dict:
+    """receipt.approvedTop10 원소 r에서 공식 근거 원값을 rankSnapshot용 flat dict로 추출.
+    재계산·DART/pykrx 재조회·단위변환·반올림 없음(복사만). netDebtApprox/netWorkingCapital은
+    이미 있는 원값의 단순 뺄셈이며, 입력이 None이면 파생값도 None."""
+    tl = r.get("totalLiabilities")
+    cash = r.get("cashAndCashEquivalents")
+    ca = r.get("currentAssets")
+    cl = r.get("currentLiabilities")
+    net_debt = (tl - cash) if (tl is not None and cash is not None) else None
+    nwc = (ca - cl) if (ca is not None and cl is not None) else None
+    fy, fs_div = _parse_data_source(r.get("dataSource"))
+    ev = {
+        "formulaVersion": receipt.get("formulaVersion"),
+        "formulaMode": receipt.get("formulaMode"),
+        "evMethod": r.get("evMethod"),
+        "priceAsOfDate": receipt.get("signalAsOfDate"),
+        "financialStatementYear": fy,
+        "financialStatementPeriod": None,   # 현재 연간 사업보고서만; 구조화 정보 없음 → null 보류
+        "dartFsDiv": fs_div,
+        "dataSource": r.get("dataSource"),
+        "closePrice": r.get("signalClosePrice"),
+        "marketCap": r.get("marketCap"),
+        "ebit": r.get("EBIT"),
+        "totalLiabilities": tl,
+        "cashAndCashEquivalents": cash,
+        "netDebtApprox": net_debt,
+        "enterpriseValue": r.get("enterpriseValue"),
+        "currentAssets": ca,
+        "currentLiabilities": cl,
+        "netWorkingCapital": nwc,
+        "propertyPlantAndEquipment": r.get("propertyPlantAndEquipment"),
+        "investedCapital": r.get("capitalBase"),
+    }
+    ev["evidenceCompleteness"] = all(ev[k] is not None for k in _EVIDENCE_REQUIRED)
+    return ev
+
+
+def _inject_lot_evidence(new_state: dict, receipt: dict) -> None:
+    """신규 batch(receipt.batchId)의 itemLots/buyLedger rankSnapshot에 evidence를 additive 주입.
+    기존 랭크필드는 setdefault로 절대 덮어쓰지 않는다. 과거 batch lot은 건드리지 않는다."""
+    appr = receipt.get("approvedTop10") or []
+    ev_by_code = {str(r["code"]): build_lot_evidence(r, receipt) for r in appr}
+    bid = receipt.get("batchId")
+    for coll in (new_state.get("itemLots") or [], new_state.get("buyLedger") or []):
+        for row in coll:
+            if row.get("batchId") != bid:
+                continue
+            snap = row.get("rankSnapshot")
+            ev = ev_by_code.get(str(row.get("code")))
+            if isinstance(snap, dict) and ev:
+                for k, v in ev.items():
+                    snap.setdefault(k, v)
 
 
 def build_official_state_append(receipt: dict, canonical_bytes: bytes):
@@ -719,6 +802,10 @@ def build_official_state_append(receipt: dict, canonical_bytes: bytes):
         raise ReceiptMismatch("officialExecutionCalendar last != executionDate")
     if new_state["officialKrxTradingCalendar"][-1] != receipt["executionDate"]:
         raise ReceiptMismatch("officialKrxTradingCalendar last != executionDate")
+
+    # --- MF-SCHEMA-1B: 승인값 검증 완료 후, 신규 batch lot rankSnapshot에 공식 근거 원값 additive 주입 ---
+    # (검증 이후·직렬화 이전 지점. 과거 batch/lot 불변, 기존 랭크필드 불변, 재계산 0)
+    _inject_lot_evidence(new_state, receipt)
     return new_state, result, canon
 
 

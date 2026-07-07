@@ -91,7 +91,16 @@ def mk_v2_receipt(prior_bytes, *, pkg_dir=None, created_at=CREATED_AT):
         approved.append({"rank": i, "code": c, "name": f"S{c}", "openPrice": op, "quantity": int(q),
                          "amount": round(op * q, 2), "combinedRank": i * 2, "profitabilityRank": i,
                          "valueRank": i, "returnOnCapital": 0.5, "earningsYield": 0.2,
-                         "signalClosePrice": None, "marketCap": None})
+                         "signalClosePrice": 900.0 + i, "marketCap": 700.0 + i,
+                         # MF-SCHEMA-1B: 공식 근거 원값(종목별 상이한 고정값으로 복사 정확성 검증)
+                         "EBIT": 1_000_000.0 * i, "enterpriseValue": 5_000_000.0 * i,
+                         "capitalBase": 2_000_000.0 * i, "currentAssets": 3_000_000.0 * i,
+                         "currentLiabilities": 1_500_000.0 * i,
+                         "propertyPlantAndEquipment": 800_000.0 * i,
+                         "totalLiabilities": 1_200_000.0 * i,
+                         "cashAndCashEquivalents": 400_000.0 * i,
+                         "evMethod": "marketCap_plus_totalLiabilities_minus_cash",
+                         "dataSource": "DART 2025 CFS"})
     cash_reserve = round(1_000_000.0 - total_invested, 2)
     r = {
         "schemaVersion": A.RECEIPT_V2_SCHEMA_VERSION, "receiptType": "OFFICIAL_EXECUTION_RECEIPT",
@@ -100,6 +109,7 @@ def mk_v2_receipt(prior_bytes, *, pkg_dir=None, created_at=CREATED_AT):
         "executionDate": "2026-06-19", "executionMarketOpenAt": "2026-06-19T09:00:00+09:00",
         "executionPriceSource": "pykrx_open", "lookAheadValidationPassed": True,
         "formulaVersion": "book-faithful-v1-test",
+        "formulaMode": "book_faithful_v1",   # MF-SCHEMA-1B: lot evidence용
         "batchId": "MF-BATCH-2026-06-19", "proposedBatchId": "MF-BATCH-2026-06-19",
         "sequence": 2, "proposedSequence": 2, "buyTradingDayIndex": 3, "plannedSellTradingDayIndex": 53,
         "buyCount": 10, "sellCount": 0, "allocatedCapital": 1_000_000.0,
@@ -482,6 +492,91 @@ def t18_no_eval_prices_held_non_top10_blocked():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def t19_new_lot_evidence_copied():
+    """MF-SCHEMA-1B: 신규 batch lot rankSnapshot에 공식 근거 원값이 복사(재계산 아님)되고,
+    파생값(netDebtApprox/netWorkingCapital)과 dataSource 구조화가 정확하며, 기존 6개 랭크필드가 보존된다."""
+    root, d = _tmp()
+    try:
+        state, snaps, prior = _setup(root)
+        r = mk_v2_receipt(prior)
+        A.apply_official_append(r, do_apply=True, confirm=CONFIRM, state_path=state, snapshot_dir=snaps)
+        st = json.loads(state.read_text(encoding="utf-8"))
+        lots = [l for l in st["itemLots"] if l["batchId"] == "MF-BATCH-2026-06-19"]
+        assert len(lots) == 10, len(lots)
+        appr = {a["code"]: a for a in r["approvedTop10"]}
+        for l in lots:
+            snap = l["rankSnapshot"]; src = appr[l["code"]]
+            # 원값 byte-exact 복사(반올림/단위변환/재계산 금지)
+            assert snap["ebit"] == src["EBIT"], (snap["ebit"], src["EBIT"])
+            assert snap["enterpriseValue"] == src["enterpriseValue"]
+            assert snap["investedCapital"] == src["capitalBase"]
+            assert snap["totalLiabilities"] == src["totalLiabilities"]
+            assert snap["cashAndCashEquivalents"] == src["cashAndCashEquivalents"]
+            assert snap["currentAssets"] == src["currentAssets"]
+            assert snap["currentLiabilities"] == src["currentLiabilities"]
+            assert snap["propertyPlantAndEquipment"] == src["propertyPlantAndEquipment"]
+            assert snap["closePrice"] == src["signalClosePrice"]
+            assert snap["marketCap"] == src["marketCap"]
+            # 파생값(이미 있는 원값의 단순 뺄셈)
+            assert snap["netDebtApprox"] == src["totalLiabilities"] - src["cashAndCashEquivalents"]
+            assert snap["netWorkingCapital"] == src["currentAssets"] - src["currentLiabilities"]
+            # dataSource 안전 파싱
+            assert snap["financialStatementYear"] == 2025 and snap["dartFsDiv"] == "CFS"
+            assert snap["financialStatementPeriod"] is None and snap["dataSource"] == "DART 2025 CFS"
+            # 메타/완결성
+            assert snap["priceAsOfDate"] == r["signalAsOfDate"]
+            assert snap["formulaVersion"] == r["formulaVersion"] and snap["formulaMode"] == r["formulaMode"]
+            assert snap["evidenceCompleteness"] is True
+            # 기존 6개 랭크필드 의미 불변(setdefault로 덮어쓰지 않음)
+            assert snap["rank"] == src["rank"] and snap["combinedRank"] == src["combinedRank"]
+            assert snap["valueRank"] == src["valueRank"] and snap["profitabilityRank"] == src["profitabilityRank"]
+            assert snap["returnOnCapital"] == src["returnOnCapital"] and snap["earningsYield"] == src["earningsYield"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def t20_past_batch_lot_no_evidence_backcompat():
+    """MF-SCHEMA-1B: 과거 batch(batch1) lot rankSnapshot은 evidence 없이 6개 랭크필드만 그대로 보존되고,
+    evidence 없는 과거 lot이 섞여도 public mapper가 정상 로드한다(하위호환)."""
+    root, d = _tmp()
+    try:
+        state, snaps, prior = _setup(root)
+        A.apply_official_append(mk_v2_receipt(prior), do_apply=True, confirm=CONFIRM,
+                                state_path=state, snapshot_dir=snaps)
+        st = json.loads(state.read_text(encoding="utf-8"))
+        b1 = [l for l in st["itemLots"] if l["batchId"] == "MF-BATCH-2026-06-17"]
+        assert b1, "batch1 lots missing"
+        for l in b1:
+            snap = l["rankSnapshot"]
+            assert "ebit" not in snap and "evidenceCompleteness" not in snap, snap
+            assert set(snap.keys()) == set(E.RANK_FIELDS), snap.keys()
+        pub = P.build_magic_official_public(state_path=state)   # evidence 혼재 canonical read-only 로드
+        assert pub["magicOfficialSummary"]["officialSequence"] == 2
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def t21_buyledger_evidence_and_evmethod_preserved():
+    """MF-SCHEMA-1B: buyLedger 신규 batch 항목에도 동일 evidence가 주입되고,
+    evMethod(A안 EV 정의)와 formulaVersion이 보존된다(공식 변경 없음)."""
+    root, d = _tmp()
+    try:
+        state, snaps, prior = _setup(root)
+        r = mk_v2_receipt(prior)
+        A.apply_official_append(r, do_apply=True, confirm=CONFIRM, state_path=state, snapshot_dir=snaps)
+        st = json.loads(state.read_text(encoding="utf-8"))
+        be = [e for e in st["buyLedger"] if e["batchId"] == "MF-BATCH-2026-06-19"]
+        assert len(be) == 10, len(be)
+        for e in be:
+            snap = e["rankSnapshot"]
+            assert snap["evMethod"] == "marketCap_plus_totalLiabilities_minus_cash"
+            assert snap["formulaVersion"] == "book-faithful-v1-test"
+            assert snap["evidenceCompleteness"] is True
+        assert st["formulaVersion"] == "book-faithful-v1-test"   # canonical formulaVersion 불변
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 TESTS = [
     ("1  day2 append 정상(seq2/batch2/idx3)", t1_append_apply_ok),
     ("2  officialSequence/index/달력 append", t2_seq_and_index_and_calendars),
@@ -501,6 +596,9 @@ TESTS = [
     ("16 BLOCKED 시 canonical 불변", t16_input_canonical_not_mutated_on_block),
     ("17 evalPrices union→보유-비TOP10 평가", t17_eval_union_values_held_non_top10),
     ("18 evalPrices 누락+보유-비TOP10→BLOCKED", t18_no_eval_prices_held_non_top10_blocked),
+    ("19 신규 lot evidence 복사(재계산 아님)+랭크필드 보존", t19_new_lot_evidence_copied),
+    ("20 과거 batch lot evidence 없음+public 하위호환", t20_past_batch_lot_no_evidence_backcompat),
+    ("21 buyLedger evidence+evMethod/formulaVersion 보존", t21_buyledger_evidence_and_evmethod_preserved),
 ]
 
 

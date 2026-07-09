@@ -34,3 +34,45 @@ Thumbs.db
 
 # QA / daily summary report outputs (regenerated each run)
 reports/
+
+# ============================================================
+# 와바바 운영 산출물 — 루트 앵커(/) 명시만. 광역 와일드카드 금지
+#   (tracked 3종 보호: financial-universe-real.json /
+#    financial-universe-upstream-sample.json / magic-formula-change-log.json)
+#   목적: git add . 실수로도 canonical 장부가 stage/commit되지 않게 방어.
+# ============================================================
+
+# 운영 장부/상태 (커밋 절대 금지)
+/magic-formula-official-state.json
+/magic-formula-trade-lots.json
+/magic-formula-realized-trades.json
+/magic-formula-operation-log.json
+/magic-formula-portfolio.json
+/portfolio.json
+/trade-history.json
+/reviewed-candidates.json
+/strategy-filter-config.json
+/wababa-ai-portfolio.json
+/wababa-ai-trade-history.json
+/wababa-ai-auto-trade-log.json
+/wababa-auto-trade-log.json
+/wababa-auto-run-state.json
+/data/
+
+# 재생성 산출물 (매 실행 재생성)
+/company-profiles.json
+/daily-report.json
+/daily-report.txt
+/daily-run-summary.json
+/magic-formula-daily-actions.json
+/magic-formula-rankings.json
+/recommendation-history.json
+/news-raw-real.json
+/news-momentum-sample.json
+/news-raw-sample.json
+/wababa-auto-daily-task-last-result.json
+/wababa-auto-daily-task-last-error.txt
+
+# 일회성 phase 마이그레이션 백업
+/_phase43e3_backup/
+/_phase45c_backup/

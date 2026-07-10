@@ -13,12 +13,12 @@
     "note": "2026-07 기준 최신 확보 가능 분기는 2026 1분기(11013, 5월 공시). 2026 반기(11012)는 8월 공시로 아직 없음."
   },
   "fsDivPolicy": "종목별 dartFsDiv(연간 기준)로 lock. CFS 우선, 별도만 있으면 OFS. 한 종목의 5개 보고서는 동일 fs_div만 사용(연결/별도 혼용 금지).",
-  "eligibilityFilter": {
+  "eligibilityFilterDeprecated_sampleOnly": {
     "excludeIndustryPattern": "금융|기타금융|증권|보험|은행|부동산|전기·가스|가스·수도|·수도",
     "dartLatestYear": 2025,
     "minMarketCapBillionKrw": 300,
     "requirePositiveOpMargin": true,
-    "note": "TTM 분기수집 대상(read-only universe 기반, 결정론). magic 공식 eligible(1316) 근사 — EBIT 유효성을 opMargin>0로 근사하고 marketCap 하한 300억 적용해 ≈1366종. 공식 eligibility 산식(EBIT/EV/투입자본)은 재구현하지 않는다(원칙 준수). 운영 반영 시 magic eligible 목록과 교집합 권장."
+    "note": "[DEPRECATED — 근사, 배치 대상 생성에 사용 금지] select_ttm_100(100종 표본)에서만 사용. 배치 manifest 는 공식 magic eligible(build_magic_formula_fund.calculate_book_faithful_magic_ranking, 1316종)을 extract_official_eligible.py 로 추출해 사용한다. 근사(opMargin>0·cap≥300억)는 공식과 60종 차이(근사에만 55, 공식에만 5)가 있어 배치 대상에서 제거."
   },
   "batchConfig": {
     "batchSize": 200,

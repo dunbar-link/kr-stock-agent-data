@@ -70,6 +70,11 @@ class RateLimited(Exception):
     pass
 
 
+class FatalDartError(Exception):
+    """권한/접근 오류(012 접근불가 IP, 901 키만료, 011 미등록 키). 재시도 무의미 → 배치 즉시 중단."""
+    pass
+
+
 def ensure_dirs():
     QUARTERLY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -131,8 +136,9 @@ def fetch_report(corp_code: str, year: int, reprt_code: str, fs_div: str, stats:
         return []
     if status == "020":
         raise RateLimited("OpenDART status=020 요청제한 — 즉시 중단(반복 호출 안 함)")
-    if status == "901":
-        raise RuntimeError("OpenDART status=901 API 키 만료")
+    if status in {"012", "901", "011"}:
+        # 012 접근불가 IP / 901 키만료 / 011 등록되지 않은 키 = 권한·영구 오류. 재시도 무의미 → 즉시 중단.
+        raise FatalDartError(f"OpenDART status={status} (권한/접근 오류) — 즉시 중단, 재시도 안 함")
     raise RuntimeError(f"OpenDART 조회 실패 status={status} msg={C.safe_text(payload.get('message'))}")
 
 

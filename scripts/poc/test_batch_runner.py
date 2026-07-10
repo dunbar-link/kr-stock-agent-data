@@ -90,6 +90,31 @@ def test_020_stop_and_state():
         Q.process_stock = orig
 
 
+def test_fatal_dart_stop():
+    # status 012(접근불가 IP)/901 = FatalDartError → 첫 종목에서 즉시 중단(전 종목 시도 안 함)
+    orig = Q.process_stock
+    calls = {"n": 0}
+
+    def fatal(*a, **k):
+        calls["n"] += 1
+        raise Q.FatalDartError("mock 012 접근불가 IP")
+    Q.process_stock = fatal
+    try:
+        bd = B.load_manifest()["universeBaseDate"]
+        # 이전 state 제거해 깨끗이
+        sp = TMP / "batch-state-batch-02.json"
+        if sp.exists():
+            sp.unlink()
+        B.main(["--batch-id", "batch-02", "--real-fetch",
+                "--confirm", f"RUN_TTM_BACKFILL_{bd}_batch-02", "--output-dir", str(TMP)])
+        st = json.loads(sp.read_text(encoding="utf-8"))
+        check("fatal(012) → 첫 종목에서 즉시 중단(1회만 시도)", calls["n"] == 1, f"attempts={calls['n']}")
+        check("fatal(012) → fatalDartError 기록", "fatalDartError" in st and st["fatalDartError"])
+        check("fatal(012) → resume 인덱스 기록", st.get("resumeAfterSelectionIndex") is not None)
+    finally:
+        Q.process_stock = orig
+
+
 def test_resume_skips_completed():
     # 상태에 COMPLETE 주입 후 offline resume → 그 종목 재처리 안 함
     m = B.load_manifest()
@@ -137,6 +162,7 @@ def main():
         test_dryrun_zero_calls(net)
         test_offline_zero_calls(net)
         test_020_stop_and_state()
+        test_fatal_dart_stop()
         test_resume_skips_completed()
         test_state_no_secrets()
         test_annual_cache_untouched()

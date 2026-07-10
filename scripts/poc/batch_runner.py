@@ -137,6 +137,7 @@ def main(argv=None) -> int:
     plan_calls = 0
     processed = 0
     rate_limited = False
+    fatal_stop = False
     counts = {}
     results = []
 
@@ -180,6 +181,13 @@ def main(argv=None) -> int:
             state["resumeAfterSelectionIndex"] = s["selectionIndex"] - 1
             rate_limited = True
             break  # 020 즉시 중단, 자동 재시도 금지
+        except Q.FatalDartError as e:
+            # 012 접근불가 IP / 901 키만료 등 권한·영구 오류 → 즉시 중단(재시도 무의미). 이 종목은 미완료로 남김.
+            state["stocks"][code] = {"status": ST_RATE_LIMITED, "fatal": str(e)}
+            state["fatalDartError"] = str(e)
+            state["resumeAfterSelectionIndex"] = s["selectionIndex"] - 1
+            fatal_stop = True
+            break
         except Exception as e:  # noqa: BLE001
             state["stocks"][code] = {"status": ST_FAILED, "error": type(e).__name__}
             continue
@@ -199,6 +207,7 @@ def main(argv=None) -> int:
         "actualApiCalls": stats["dartCalls"],
         "cacheHitSkipped": sum(1 for v in state["stocks"].values() if v.get("status") == ST_SKIPPED_CACHE),
         "processed": processed, "rateLimited": rate_limited,
+        "fatalDartStop": fatal_stop, "fatalDartError": state.get("fatalDartError"),
         "gateCounts": counts if counts else None,
         "resumeAfterSelectionIndex": state.get("resumeAfterSelectionIndex"),
         "statePath": str(state_path(args.batch_id, output_dir)),

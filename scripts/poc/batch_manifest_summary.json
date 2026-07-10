@@ -1,11 +1,13 @@
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "2.0.0",
+  "eligibleSource": "build_magic_formula_fund.calculate_book_faithful_magic_ranking (canonical, read-only)",
   "universeBaseDate": "2026-07-09",
-  "eligibleCount": 1366,
+  "eligibleCount": 1316,
+  "codeSetHash": "2e09bc01e6af6f92",
   "batchSize": 200,
   "batchCount": 7,
   "integrity": {
-    "total": 1366,
+    "total": 1316,
     "duplicates": 0,
     "byBatch": {
       "batch-01": 200,
@@ -14,152 +16,173 @@
       "batch-04": 200,
       "batch-05": 200,
       "batch-06": 200,
-      "batch-07": 166
+      "batch-07": 116
     }
   },
   "cacheStatusAgg": {
-    "cached": 75,
-    "pending": 1291
+    "cached": 71,
+    "pending": 1245
   },
-  "note": "전체 manifest 는 _cache(gitignore)에 생성. 이 파일은 소형 요약+배치별 샘플 3종만(commit).",
+  "note": "공식 마법공식 eligible(canonical 함수) 기반. 근사 eligibility 미사용. 전체 manifest는 _cache(gitignore), 이 파일은 요약+배치별 샘플 3종만(commit).",
   "batchSamples": {
     "batch-01": [
       {
-        "stockCode": "005930",
-        "companyName": "삼성전자",
+        "stockCode": "046940",
+        "companyName": "우원개발",
         "fsDiv": "CFS",
+        "officialRank": 1,
         "cacheStatus": "cached"
       },
       {
-        "stockCode": "000660",
-        "companyName": "SK하이닉스",
-        "fsDiv": "CFS",
-        "cacheStatus": "cached"
+        "stockCode": "461300",
+        "companyName": "아이스크림미디어",
+        "fsDiv": "OFS",
+        "officialRank": 2,
+        "cacheStatus": "pending"
       },
       {
-        "stockCode": "009150",
-        "companyName": "삼성전기",
+        "stockCode": "088130",
+        "companyName": "동아엘텍",
         "fsDiv": "CFS",
-        "cacheStatus": "cached"
+        "officialRank": 3,
+        "cacheStatus": "pending"
       }
     ],
     "batch-02": [
       {
-        "stockCode": "437730",
-        "companyName": "삼현",
+        "stockCode": "047050",
+        "companyName": "포스코인터내셔널",
         "fsDiv": "CFS",
+        "officialRank": 201,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "001820",
-        "companyName": "삼화콘덴서",
+        "stockCode": "145720",
+        "companyName": "덴티움",
         "fsDiv": "CFS",
+        "officialRank": 202,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "057050",
-        "companyName": "현대홈쇼핑",
+        "stockCode": "010240",
+        "companyName": "흥국",
         "fsDiv": "CFS",
+        "officialRank": 203,
         "cacheStatus": "pending"
       }
     ],
     "batch-03": [
       {
-        "stockCode": "007690",
-        "companyName": "국도화학",
+        "stockCode": "036090",
+        "companyName": "위지트",
         "fsDiv": "CFS",
+        "officialRank": 401,
+        "cacheStatus": "cached"
+      },
+      {
+        "stockCode": "004590",
+        "companyName": "한국가구",
+        "fsDiv": "CFS",
+        "officialRank": 402,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "005950",
-        "companyName": "이수화학",
+        "stockCode": "237880",
+        "companyName": "클리오",
         "fsDiv": "CFS",
-        "cacheStatus": "pending"
-      },
-      {
-        "stockCode": "017900",
-        "companyName": "광전자",
-        "fsDiv": "CFS",
+        "officialRank": 403,
         "cacheStatus": "pending"
       }
     ],
     "batch-04": [
       {
-        "stockCode": "091580",
-        "companyName": "상신이디피",
+        "stockCode": "950170",
+        "companyName": "JTC",
         "fsDiv": "CFS",
+        "officialRank": 601,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "003220",
-        "companyName": "대원제약",
+        "stockCode": "365550",
+        "companyName": "ESR켄달스퀘어리츠",
         "fsDiv": "CFS",
+        "officialRank": 602,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "098120",
-        "companyName": "마이크로컨텍솔",
+        "stockCode": "001120",
+        "companyName": "LX인터내셔널",
         "fsDiv": "CFS",
+        "officialRank": 603,
         "cacheStatus": "pending"
       }
     ],
     "batch-05": [
       {
-        "stockCode": "163730",
-        "companyName": "핑거",
+        "stockCode": "189980",
+        "companyName": "흥국에프엔비",
         "fsDiv": "CFS",
+        "officialRank": 801,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "051160",
-        "companyName": "지어소프트",
+        "stockCode": "085910",
+        "companyName": "네오티스",
         "fsDiv": "CFS",
+        "officialRank": 802,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "080420",
-        "companyName": "모다이노칩",
-        "fsDiv": "CFS",
+        "stockCode": "475430",
+        "companyName": "키스트론",
+        "fsDiv": "OFS",
+        "officialRank": 803,
         "cacheStatus": "pending"
       }
     ],
     "batch-06": [
       {
-        "stockCode": "067370",
-        "companyName": "선바이오",
-        "fsDiv": "OFS",
+        "stockCode": "155650",
+        "companyName": "와이엠씨",
+        "fsDiv": "CFS",
+        "officialRank": 1001,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "066700",
-        "companyName": "테라젠이텍스",
+        "stockCode": "036200",
+        "companyName": "유니셈",
         "fsDiv": "CFS",
+        "officialRank": 1002,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "006660",
-        "companyName": "삼성공조",
+        "stockCode": "452190",
+        "companyName": "한빛레이저",
         "fsDiv": "CFS",
+        "officialRank": 1003,
         "cacheStatus": "pending"
       }
     ],
     "batch-07": [
       {
-        "stockCode": "238120",
-        "companyName": "얼라인드",
+        "stockCode": "005160",
+        "companyName": "동국산업",
         "fsDiv": "CFS",
+        "officialRank": 1201,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "052790",
-        "companyName": "액토즈소프트",
+        "stockCode": "241690",
+        "companyName": "유니테크노",
         "fsDiv": "CFS",
+        "officialRank": 1202,
         "cacheStatus": "pending"
       },
       {
-        "stockCode": "099220",
-        "companyName": "SDN",
+        "stockCode": "126730",
+        "companyName": "코칩",
         "fsDiv": "CFS",
+        "officialRank": 1203,
         "cacheStatus": "pending"
       }
     ]

@@ -269,16 +269,54 @@ def test_internal_consistency_fail():
     check("internal consistency: OP>GP FAIL", not r["consistent"], str(r))
 
 
-def test_outlier_income_extreme_not_hard():
-    # 영업이익 2026Q1(57조) > 직전연간(43조) → incomeExtreme (revenueHard 아님)
-    singles = {"revenue": {"2026Q1": 133.0, "2025Q4": 93.0, "2025Q3": 86.0, "2025Q2": 74.0},
-               "operatingIncome": {"2026Q1": 57.0, "2025Q4": 20.0, "2025Q3": 12.0, "2025Q2": 4.7},
-               "netIncome": {"2026Q1": 47.0, "2025Q4": 19.0, "2025Q3": 12.0, "2025Q2": 5.0}}
-    fy = {"revenue": 333.0, "operatingIncome": 43.0, "netIncome": 45.0}
-    yoy = {"operatingIncome": 6.7, "netIncome": 8.2, "revenue": 79.0}
+_BIG = 2_160_000_000_000     # 2.16조 (>= 임계 2000억)
+_SMALL = 5_000_000_000       # 50억 (< 임계)
+_MED_SMALL = 30_000_000_000  # 300억 (< 임계)
+
+
+def test_outlier_large_extreme_is_significant():
+    # 절대규모 큼(2.16조) + 분기>직전연간 → significantExtreme
+    singles = {"revenue": {"2026Q1": _BIG * 5, "2025Q4": 1.0, "2025Q3": 1.0, "2025Q2": 1.0},
+               "operatingIncome": {"2026Q1": _BIG, "2025Q4": 5e11, "2025Q3": 3e11, "2025Q2": 2e11},
+               "netIncome": {"2026Q1": _BIG, "2025Q4": 5e11, "2025Q3": 3e11, "2025Q2": 2e11}}
+    fy = {"revenue": _BIG * 30, "operatingIncome": 1_000_000_000_000, "netIncome": 1_000_000_000_000}
+    yoy = {"operatingIncome": 1e11, "netIncome": 1e11}
     o = C.outlier_flags(singles, fy, yoy)
-    check("outlier: op>FY is incomeExtreme", any("operatingIncome" in f for f in o["incomeExtreme"]), str(o))
-    check("outlier: revenue not hard-flagged", o["revenueHard"] == [], str(o))
+    check("outlier: 큰규모 극단 → significantExtreme", len(o["significantExtreme"]) > 0, str(o))
+    check("outlier: revenueHard 아님", o["revenueHard"] == [], str(o))
+
+
+def test_outlier_small_turnaround_is_transition_only():
+    # 소규모 흑자전환(50억, 전년 -20억) → transitions, significant/ minor 아님
+    singles = {"revenue": {"2026Q1": 3e10, "2025Q4": 3e10, "2025Q3": 3e10, "2025Q2": 3e10},
+               "operatingIncome": {"2026Q1": _SMALL, "2025Q4": 2e9, "2025Q3": 1e9, "2025Q2": 1e9},
+               "netIncome": {"2026Q1": _SMALL, "2025Q4": 1e9, "2025Q3": 1e9, "2025Q2": 1e9}}
+    fy = {"revenue": 12e10, "operatingIncome": 5e9, "netIncome": 4e9}
+    yoy = {"operatingIncome": -2e9, "netIncome": -2e9}
+    o = C.outlier_flags(singles, fy, yoy)
+    check("outlier: 소규모 흑전 → transitions", len(o["transitions"]) > 0, str(o))
+    check("outlier: 소규모 흑전 significant 아님", o["significantExtreme"] == [], str(o))
+
+
+def test_outlier_small_yoy_is_minor_not_significant():
+    # YoY +500% 지만 절대규모 작음(300억) → minorFlags, significant 아님
+    singles = {"revenue": {"2026Q1": 3e11, "2025Q4": 2e11, "2025Q3": 2e11, "2025Q2": 2e11},
+               "operatingIncome": {"2026Q1": _MED_SMALL, "2025Q4": 1e10, "2025Q3": 1e10, "2025Q2": 1e10},
+               "netIncome": {"2026Q1": 1e10, "2025Q4": 1e10, "2025Q3": 1e10, "2025Q2": 1e10}}
+    fy = {"revenue": 9e11, "operatingIncome": 4e10, "netIncome": 4e10}
+    yoy = {"operatingIncome": _MED_SMALL / 6, "netIncome": 8e9}   # +500%
+    o = C.outlier_flags(singles, fy, yoy)
+    check("outlier: 소규모 YoY → minor", len(o["minorFlags"]) > 0, str(o))
+    check("outlier: 소규모 YoY significant 아님", o["significantExtreme"] == [], str(o))
+
+
+def test_outlier_threshold_is_config_driven():
+    # 동일 값이라도 config 임계값을 낮추면 significant 로 승격(코드 하드코딩 아님)
+    singles = {"operatingIncome": {"2026Q1": _MED_SMALL, "2025Q4": 1e10}}
+    fy = {"operatingIncome": 4e10}
+    yoy = {"operatingIncome": 5e9}
+    lo = C.outlier_flags(singles, fy, yoy, {"largeAbsOperatingIncomeKrw": 1e10})
+    check("outlier: 임계 낮추면 significant", len(lo["significantExtreme"]) > 0, str(lo))
 
 
 def test_outlier_revenue_hard():
@@ -304,39 +342,56 @@ def test_match_official_ir_config_driven():
     check("IR match: 오차 초과 → not matched", not m3["matched"], str(m3))
 
 
-def test_gate_extreme_with_ir_confirmed():
-    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
-                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
-                               revenue_hard=False, income_extreme=True, restatement=False, ir_matched=True)
-    check("gate: 극단+IR일치 → PASS_OFFICIAL_IR_CONFIRMED", s == C.STATUS_PASS_IR, s)
+def _classify(**kw):
+    base = dict(has_corp=True, has_anchor=True, missing_reports=False, ttm_complete=True,
+                annual_reconstructable=True, internal_consistent=True, revenue_hard=False,
+                significant_extreme=False, transition=False, restatement=False, ir_matched=False)
+    base.update(kw)
+    return C.classify_ttm_quality(**base)
 
 
-def test_gate_extreme_without_ir():
-    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
-                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
-                               revenue_hard=False, income_extreme=True, restatement=False, ir_matched=False)
-    check("gate: 극단+IR미확인 → WARNING_EXTERNAL", s == C.STATUS_WARN_EXT, s)
+def test_gate_significant_with_ir_confirmed():
+    check("gate: 큰규모극단+IR → PASS_OFFICIAL_IR_CONFIRMED",
+          _classify(significant_extreme=True, ir_matched=True) == C.STATUS_PASS_IR)
+
+
+def test_gate_significant_without_ir():
+    check("gate: 큰규모극단+IR미확인 → WARNING_EXTERNAL",
+          _classify(significant_extreme=True, ir_matched=False) == C.STATUS_WARN_EXT)
+
+
+def test_gate_transition_only_pass_note():
+    check("gate: 흑↔적 단독 → PASS_WITH_TRANSITION_NOTE",
+          _classify(transition=True, significant_extreme=False) == C.STATUS_PASS_TRANSITION)
+
+
+def test_gate_minor_only_pass():
+    check("gate: 경미(플래그 없음 취급) → PASS",
+          _classify(significant_extreme=False, transition=False) == C.STATUS_PASS)
+
+
+def test_gate_missing_reports_warning():
+    check("gate: 보고서 누락/TTM 미완성 → WARNING_EXTERNAL",
+          _classify(missing_reports=True) == C.STATUS_WARN_EXT)
 
 
 def test_gate_internal_inconsistency_blocked():
-    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
-                               ttm_complete=True, annual_reconstructable=True, internal_consistent=False,
-                               revenue_hard=False, income_extreme=True, restatement=False, ir_matched=True)
-    check("gate: 내부일관성 실패 → BLOCKED(예외없음)", s == C.STATUS_BLOCKED, s)
+    check("gate: 내부일관성 실패 → BLOCKED(예외없음)",
+          _classify(internal_consistent=False, significant_extreme=True, ir_matched=True) == C.STATUS_BLOCKED)
 
 
 def test_gate_revenue_hard_blocked():
-    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
-                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
-                               revenue_hard=True, income_extreme=False, restatement=False, ir_matched=False)
-    check("gate: 매출 물리불가 → BLOCKED", s == C.STATUS_BLOCKED, s)
+    check("gate: 매출 물리불가 → BLOCKED", _classify(revenue_hard=True) == C.STATUS_BLOCKED)
 
 
 def test_gate_normal_pass():
-    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
-                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
-                               revenue_hard=False, income_extreme=False, restatement=False, ir_matched=False)
-    check("gate: 정상 → PASS", s == C.STATUS_PASS, s)
+    check("gate: 정상 → PASS", _classify() == C.STATUS_PASS)
+
+
+def test_gate_transition_does_not_warn():
+    # 완료기준: 흑↔적 전환만으로는 WARNING 이 발생하지 않는다
+    s = _classify(transition=True)
+    check("gate: 흑↔적 단독은 WARNING 아님", s != C.STATUS_WARN_EXT and s == C.STATUS_PASS_TRANSITION, s)
 
 
 def test_gate_no_company_hardcode():
@@ -358,11 +413,14 @@ def main():
         test_sanity_income_sign_no_false_positive, test_sanity_clean_passes,
         test_prior_year_quarter_extraction,
         test_internal_consistency_pass, test_internal_consistency_fail,
-        test_outlier_income_extreme_not_hard, test_outlier_revenue_hard,
-        test_match_official_ir_config_driven,
-        test_gate_extreme_with_ir_confirmed, test_gate_extreme_without_ir,
-        test_gate_internal_inconsistency_blocked, test_gate_revenue_hard_blocked,
-        test_gate_normal_pass, test_gate_no_company_hardcode,
+        test_outlier_large_extreme_is_significant, test_outlier_small_turnaround_is_transition_only,
+        test_outlier_small_yoy_is_minor_not_significant, test_outlier_threshold_is_config_driven,
+        test_outlier_revenue_hard, test_match_official_ir_config_driven,
+        test_gate_significant_with_ir_confirmed, test_gate_significant_without_ir,
+        test_gate_transition_only_pass_note, test_gate_minor_only_pass,
+        test_gate_missing_reports_warning, test_gate_internal_inconsistency_blocked,
+        test_gate_revenue_hard_blocked, test_gate_normal_pass,
+        test_gate_transition_does_not_warn, test_gate_no_company_hardcode,
     ]
     print("=== test_ttm_core ===")
     for t in tests:

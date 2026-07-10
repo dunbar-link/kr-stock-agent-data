@@ -76,16 +76,36 @@ TTM = 최근 연속 단일분기 4개 합
    - **핵심: "분기 > 직전 연간"은 물리적 불가능이 아니다.** 2026Q1(2026 회계연도) vs 2025 연간은 서로 다른 해라 초고성장 시 성립 가능(삼성 2026Q1 영업익 57.2조 > 2025연간 43.6조 = 실제 슈퍼사이클).
 6. **정정 신호(restatement, 정보 기록만)**: 2026Q1 보고서의 전년동기(`frmtrm_q`)가 2025Q1 원보고서와 불일치 → 비교표시 차이. **TTM은 각 보고서 당기값만 쓰므로 값에 영향 없음.** 상태를 낮추지 않고 기록만.
 
-## 게이트 상태 (4단계)
+## 게이트 상태 (5단계) — 흑↔적 전환 튜닝 반영
 
 | 상태 | 조건 |
 |---|---|
-| `PASS` | 이상치 없음 + 내부일관성 정상 |
-| `PASS_OFFICIAL_IR_CONFIRMED` | 극단 이상치지만 공식 IR(회사 뉴스룸)과 허용오차(≤1%) 내 일치 |
-| `WARNING_EXTERNAL_CONFIRMATION` | 내부일관성 정상 + 극단 이상치 + 공식 IR 미확인 → 외부확인 권장 |
+| `PASS` | 이상치 없음, 또는 절대규모 작은 급변(경미)뿐 + 내부일관성 정상 |
+| `PASS_WITH_TRANSITION_NOTE` | 흑↔적 전환만(절대규모 작음) — 정상 이벤트, 외부확인 불필요, note만 기록 |
+| `PASS_OFFICIAL_IR_CONFIRMED` | 절대규모 큰 극단 + 공식 IR(회사 뉴스룸)과 허용오차(≤1%) 내 일치 |
+| `WARNING_EXTERNAL_CONFIRMATION` | 절대규모 큰 극단 + IR 미확인, 또는 보고서 누락으로 TTM 미완성 |
 | `BLOCKED_DATA_INCONSISTENCY` | 매핑/앵커 실패, 매출 물리불가, 손익 내부일관성 위반 |
 
-- 공식 IR 확인값은 코드가 아닌 `ttm_poc_config.json`의 `officialIrConfirmations`(외부 검증 입력 데이터)로 관리. `match_official_ir()`은 종목-불문 일반 로직으로 대조 → **기업명/숫자 하드코딩·전용 예외문 없음.**
+**이상치 등급(`outlier_flags`)**: `revenueHard`(→BLOCKED) / `significantExtreme`(절대규모 큼 + 극단신호 → WARNING/IR) / `transitions`(흑↔적, 절대규모 작으면 note) / `minorFlags`(절대규모 작은 급변 → PASS).
+
+**핵심 원칙**: 흑↔적 전환·비율 급변'만'으로는 WARNING을 만들지 않는다. **절대 원화 규모(영업익/순익 2026Q1 절대값)와 함께** 판단한다. 시가총액은 진실성 기준으로 쓰지 않는다.
+
+**임계값(config `gateThresholds`, 코드에 산발 하드코딩 없음)**:
+- `largeAbsOperatingIncomeKrw`=2000억(2e11): 100종 2026Q1 영업익 분포상 상위 4종(SK이노 2.16조·POSCO 7068억·롯데 2529억·두산에너 2335억)과 5위(212억) 사이 자연 갭. `yoyExtremePct`=3.0, `qoqExtremePct`=2.0.
+- 코드의 `DEFAULT_GATE_THRESHOLDS`는 config 미제공 시 fallback 단일 상수(테스트로 config override 입증). 종목코드/기업명/실적값 하드코딩 0. `match_official_ir()`도 config `officialIrConfirmations`만 대조하는 종목-불문 로직.
+
+### 게이트 튜닝 결과 (100종, 재분류)
+| | 튜닝 전 | 튜닝 후 |
+|---|---|---|
+| PASS | 59 | 67 |
+| PASS_WITH_TRANSITION_NOTE | — | 20 |
+| PASS_OFFICIAL_IR_CONFIRMED | 2 | 2 |
+| WARNING_EXTERNAL_CONFIRMATION | **39** | **11** |
+| BLOCKED | 0 | 0 |
+
+- WARNING 39→11(−28). 잔존 11 = 절대규모 큰 극단 6(SK이노·POSCO·SK텔레콤·롯데·두산에너·LG화학) + 보고서 누락 5(신규상장).
+- 흑↔적 단독 20종은 `PASS_WITH_TRANSITION_NOTE`로 완화(전부 op26<2000억). 삼성·SK는 IR 확정 유지. 절대규모 크지만 극단신호 없는 안정적 대형주(기아·현대차 등)는 정상 `PASS`(잘못 완화 아님).
+- 연간역산 96/96 diff=0 유지, 내부일관성 위반 0, 신규 DART 호출 0(캐시 재사용).
 
 ## PoC 결과 (2026-07-09, 20종목) — IR 게이트 적용 후
 

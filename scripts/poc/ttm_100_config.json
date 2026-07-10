@@ -19,6 +19,12 @@
     "note": "2026-07 기준 최신 확보 가능 분기는 2026 1분기(11013, 5월 공시). 2026 반기(11012)는 8월 공시로 아직 없음."
   },
   "fsDivPolicy": "종목별 dartFsDiv(연간 기준)로 lock. CFS 우선, 별도만 있으면 OFS. 한 종목의 5개 보고서는 동일 fs_div만 사용(연결/별도 혼용 금지).",
+  "gateThresholds": {
+    "largeAbsOperatingIncomeKrw": 200000000000,
+    "yoyExtremePct": 3,
+    "qoqExtremePct": 2,
+    "_note": "'절대 규모 큼' 경계 2000억원(=2e11). 100종 2026Q1 영업익 분포상 상위 4종(SK이노 2.16조·POSCO 7068억·롯데 2529억·두산에너 2335억)과 5위(212억) 사이 자연 갭. 흑↔적/YoY/QoQ 급변은 이 규모 이상일 때만 외부확인 대상."
+  },
   "officialIrConfirmations": [
     {
       "code": "005930",

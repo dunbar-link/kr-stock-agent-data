@@ -244,18 +244,34 @@ def income_statement_consistency(rows: list[dict], tol: float = 0.02) -> dict:
     return {"consistent": ok, "checks": checks, "checkedCount": len(checks)}
 
 
-def outlier_flags(single_by_metric: dict, fy_by_metric: dict,
-                  yoy_by_metric: dict, yoy_threshold: float = 3.0) -> dict:
-    """이상치 플래그를 두 등급으로 분리한다.
+# 게이트 임계값 기본값(config gateThresholds 로 override). 코드 산발 하드코딩 방지용 단일 출처.
+DEFAULT_GATE_THRESHOLDS = {
+    "largeAbsOperatingIncomeKrw": 200_000_000_000,  # 2000억: '절대 규모 큼' 경계(100종 분포상 자연 갭)
+    "yoyExtremePct": 3.0,                            # 전년동기 대비 ±300%
+    "qoqExtremePct": 2.0,                            # 전분기 대비 +200%
+}
 
-    revenueHard: 진짜 물리적 불가능(→ BLOCKED). 매출 음수, 또는 '같은 회계연도(2025)' 분기 매출이 그 해 연간 매출 초과.
-    incomeExtreme: 경제적으로 드문 극단값(→ 불가능 아님, 외부확인 대상).
-        - 영업이익/순이익 단일분기가 직전 연간을 초과(같은 부호)  ← 다른 회계연도 비교라 초고성장 시 성립 가능
-        - 2026Q1 YoY 급변 또는 흑↔적 전환
-    핵심: '분기 > 직전 연간'을 손익에 대해 불가능으로 판정하지 않는다(2026Q1 vs 2025연간=다른 해).
+
+def outlier_flags(single_by_metric: dict, fy_by_metric: dict, yoy_by_metric: dict,
+                  thresholds: dict | None = None) -> dict:
+    """이상치를 4등급으로 분리한다(흑↔적 단독을 외부검산에서 제외하는 튜닝 반영).
+
+    revenueHard(→ BLOCKED): 매출 음수, 또는 같은 회계연도 분기 매출 > 그 해 연간(물리 불가).
+    significantExtreme(→ WARNING/IR): 절대 규모가 큰(|2026Q1 영업익 또는 순익| >= largeAbs) 상태에서
+        극단신호(흑↔적 전환 / 분기>직전연간 / YoY 급변 / QoQ 급증)가 하나라도 있음.
+        → '절대 규모 + 극단'일 때만 외부확인 대상(삼성·SK·POSCO 같은 대형 극단).
+    transitions(→ PASS_WITH_TRANSITION_NOTE): 흑↔적 전환(정상 이벤트). 절대 규모가 작으면 여기에만 남아 정보 기록.
+    minorFlags(→ PASS): 분기>연간/YoY/QoQ 급변이지만 절대 규모가 작음(경미, 정보).
+
+    핵심: '흑↔적 전환만' 또는 '비율 급변만'으로는 WARNING 을 만들지 않는다. 절대 규모를 함께 본다.
+    시가총액이 아니라 '영업이익/순이익의 절대 원화 규모'를 기준으로 한다(시총은 진실성 기준 아님).
     """
-    revenue_hard = []
-    income_extreme = []
+    t = {**DEFAULT_GATE_THRESHOLDS, **(thresholds or {})}
+    large_abs = float(t["largeAbsOperatingIncomeKrw"])
+    yoy_th = float(t["yoyExtremePct"])
+    qoq_th = float(t["qoqExtremePct"])
+
+    revenue_hard, significant, transitions, minor = [], [], [], []
 
     rev = single_by_metric.get("revenue", {})
     fy_rev = fy_by_metric.get("revenue")
@@ -268,23 +284,46 @@ def outlier_flags(single_by_metric: dict, fy_by_metric: dict,
         elif fy_rev is not None and fy_rev > 0 and v > fy_rev * 1.02:
             revenue_hard.append(f"revenue {q}={_fmt(v)} > FY2025={_fmt(fy_rev)} (같은해 분기>연간)")
 
+    # 절대 규모: 손익 2026Q1 절대값 최대치로 판정
+    q26_abs_max = max(
+        (abs(single_by_metric.get(m, {}).get("2026Q1"))
+         for m in ("operatingIncome", "netIncome")
+         if single_by_metric.get(m, {}).get("2026Q1") is not None),
+        default=0.0,
+    )
+    is_large = q26_abs_max >= large_abs
+
     for metric in ("operatingIncome", "netIncome"):
         singles = single_by_metric.get(metric, {})
         fy = fy_by_metric.get(metric)
-        if fy is not None and fy > 0:
-            for q, v in singles.items():
-                if v is not None and v > fy * 1.02:
-                    income_extreme.append(f"{metric} {q}={_fmt(v)} > 직전연간 {_fmt(fy)} (극단, 외부확인 대상)")
-        prior = yoy_by_metric.get(metric)
         q26 = singles.get("2026Q1")
+        q25q4 = singles.get("2025Q4")
+        prior = yoy_by_metric.get(metric)
+
+        signals = []            # 이 metric 의 극단신호 목록
+        if fy is not None and fy > 0 and q26 is not None and q26 > fy * 1.02:
+            signals.append(f"{metric} 2026Q1={_fmt(q26)} > 직전연간 {_fmt(fy)}")
         if prior is not None and prior != 0 and q26 is not None:
             flip = (q26 < 0) != (prior < 0)
             growth = (q26 - prior) / abs(prior)
             if flip:
-                income_extreme.append(f"{metric} 2026Q1 흑↔적 전환 ({_fmt(prior)}→{_fmt(q26)})")
-            elif abs(growth) > yoy_threshold:
-                income_extreme.append(f"{metric} 2026Q1 YoY {growth*100:.0f}% ({_fmt(prior)}→{_fmt(q26)})")
-    return {"revenueHard": revenue_hard, "incomeExtreme": income_extreme}
+                transitions.append(f"{metric} 2026Q1 흑↔적 전환 ({_fmt(prior)}→{_fmt(q26)})")
+                signals.append(f"{metric} 흑↔적")
+            elif abs(growth) > yoy_th:
+                signals.append(f"{metric} YoY {growth*100:.0f}%")
+        if q25q4 is not None and q25q4 != 0 and q26 is not None:
+            qoq = (q26 - q25q4) / abs(q25q4)
+            if not ((q26 < 0) != (q25q4 < 0)) and abs(qoq) > qoq_th:
+                signals.append(f"{metric} QoQ {qoq*100:.0f}%")
+
+        for s in signals:
+            if is_large:
+                significant.append(f"[규모큼] {s} (|2026Q1|max={_fmt(q26_abs_max)}>=임계 {_fmt(large_abs)})")
+            elif "흑↔적" not in s:
+                minor.append(f"[경미] {s} (절대규모 작음)")
+
+    return {"revenueHard": revenue_hard, "significantExtreme": significant,
+            "transitions": transitions, "minorFlags": minor}
 
 
 def match_official_ir(code: str, quarter: str, dart_values: dict, confirmations: list) -> dict:
@@ -326,6 +365,7 @@ def match_official_ir(code: str, quarter: str, dart_values: dict, confirmations:
 
 # 게이트 상태
 STATUS_PASS = "PASS"
+STATUS_PASS_TRANSITION = "PASS_WITH_TRANSITION_NOTE"
 STATUS_PASS_IR = "PASS_OFFICIAL_IR_CONFIRMED"
 STATUS_WARN_EXT = "WARNING_EXTERNAL_CONFIRMATION"
 STATUS_BLOCKED = "BLOCKED_DATA_INCONSISTENCY"
@@ -334,19 +374,20 @@ STATUS_BLOCKED = "BLOCKED_DATA_INCONSISTENCY"
 def classify_ttm_quality(*, has_corp: bool, has_anchor: bool, missing_reports: bool,
                          ttm_complete: bool, annual_reconstructable: bool,
                          internal_consistent: bool, revenue_hard: bool,
-                         income_extreme: bool, restatement: bool, ir_matched: bool) -> str:
-    """새 4단계 게이트(순수 함수).
+                         significant_extreme: bool, transition: bool,
+                         restatement: bool, ir_matched: bool) -> str:
+    """5단계 게이트(순수 함수). 흑↔적 전환 단독을 외부검산에서 제외하는 튜닝 반영.
 
     우선순위:
       1) 매핑/앵커 실패, 매출 물리불가, 손익 내부일관성 실패 → BLOCKED_DATA_INCONSISTENCY
       2) 보고서 누락/역산 불가/TTM 미완성 → WARNING_EXTERNAL_CONFIRMATION
-      3) 극단 이상치(손익):
+      3) 절대 규모 큰 극단(significant):
            - 공식 IR 일치 → PASS_OFFICIAL_IR_CONFIRMED
            - 미확인       → WARNING_EXTERNAL_CONFIRMATION
-      4) 그 외 정상 → PASS
+      4) 흑↔적 전환만(절대 규모 작음) → PASS_WITH_TRANSITION_NOTE (정상 이벤트, 외부확인 불필요)
+      5) 그 외(경미 급변 포함) 정상 → PASS
 
-    restatement(전년동기 비교표시 불일치)는 '당기값 기반 TTM'에 영향이 없다(비교표시 차이일 뿐,
-    연간역산·내부일관성으로 이미 무결성 확인). 따라서 상태를 낮추지 않고 정보로만 기록한다.
+    restatement(전년동기 비교표시 불일치)는 '당기값 기반 TTM'에 영향이 없어 상태를 낮추지 않고 정보로만 기록.
     """
     if not has_corp or not has_anchor:
         return STATUS_BLOCKED
@@ -354,8 +395,10 @@ def classify_ttm_quality(*, has_corp: bool, has_anchor: bool, missing_reports: b
         return STATUS_BLOCKED
     if missing_reports or not ttm_complete or not annual_reconstructable:
         return STATUS_WARN_EXT
-    if income_extreme:
+    if significant_extreme:
         return STATUS_PASS_IR if ir_matched else STATUS_WARN_EXT
+    if transition:
+        return STATUS_PASS_TRANSITION
     return STATUS_PASS
 
 

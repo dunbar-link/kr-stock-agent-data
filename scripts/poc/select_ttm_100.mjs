@@ -139,6 +139,7 @@ const out = {
   eligibleCountUsed: eligible.length,
   ttmTarget: baseCfg.ttmTarget,
   fsDivPolicy: baseCfg.fsDivPolicy,
+  gateThresholds: baseCfg.gateThresholds,                     // 게이트 임계값 승계
   officialIrConfirmations: baseCfg.officialIrConfirmations,   // 기존 삼성/SK 공식 IR 확인 데이터 승계
   officialIrConfirmationsNote: baseCfg.officialIrConfirmationsNote,
   selectionSummary,

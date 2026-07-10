@@ -18,10 +18,12 @@ const partial = R.filter(r => (r.warningReasons || []).some(w => w.includes("누
 const diff0 = R.filter(r => r.annualReconstruction && r.annualReconstruction.diff === 0);
 const reconFalse = R.filter(r => r.annualReconstruction && !r.annualReconstruction.reconstructable);
 
-const extremeFlagRows = R.filter(r => r.gate && (r.gate.incomeExtremeFlags || []).length);
+const extremeFlagRows = R.filter(r => r.gate && (r.gate.significantExtremeFlags || []).length);
+const transitionRows = R.filter(r => r.gate && (r.gate.transitionFlags || []).length);
+const minorRows = R.filter(r => r.gate && (r.gate.minorFlags || []).length);
 const restateRows = R.filter(r => r.gate && (r.gate.restatementFlags || []).length);
 let heukjeok = 0, yoyBig = 0, qGtFy = 0;
-R.forEach(r => (r.gate && r.gate.incomeExtremeFlags || []).forEach(f => {
+R.forEach(r => (r.gate && r.gate.significantExtremeFlags || []).forEach(f => {
   if (f.includes("흑↔적")) heukjeok++;
   else if (f.includes("YoY")) yoyBig++;
   else if (f.includes("직전연간")) qGtFy++;
@@ -51,8 +53,10 @@ const summary = {
     matchRate: +(diff0.length / R.length).toFixed(3),
   },
   anomalies: {
-    extremeOutlierStocks: extremeFlagRows.length,
-    flagTypes: { blackRedTurnaround: heukjeok, yoySurge: yoyBig, quarterExceedsPriorAnnual: qGtFy },
+    significantExtremeStocks: extremeFlagRows.length,
+    transitionOnlyStocks: transitionRows.length,
+    minorFlagStocks: minorRows.length,
+    significantFlagTypes: { blackRedTurnaround: heukjeok, yoySurge: yoyBig, quarterExceedsPriorAnnual: qGtFy },
     restatementStocks: restateRows.length,
     internalConsistencyViolations: R.filter(r => r.gate && r.gate.internalConsistency && !r.gate.internalConsistency.consistent).length,
     missingReportStocks: partial.length,
@@ -63,10 +67,11 @@ const summary = {
     const b = r.marketCapBand || "?"; (m[b] ||= {}); m[b][r.qualityStatus] = (m[b][r.qualityStatus] || 0) + 1; return m;
   }, {}),
   fullUniverseProjection_measured: (() => {
-    // 실측: 신규 80종(20 캐시) 기준 종목당 콜/시간
-    const newStocks = R.length - 20;                        // 캐시된 seed20 제외
-    const callsPerNewStock = S.dart.cacheMiss / newStocks;  // 400/80 = 5.0
-    const secPerStock = S.avgSecPerStock;
+    // 실측 기준(라이브 100종 수집: DART 400콜/신규80종=5.0콜/종, 2.79초/종).
+    // offline 재실행 시 dart.calls=0 이므로 라이브 상수로 fallback(추정 왜곡 방지).
+    const newStocks = R.length - 20;
+    const callsPerNewStock = (S.dart.cacheMiss > 0 ? S.dart.cacheMiss / newStocks : 5.0);
+    const secPerStock = (S.avgSecPerStock > 0.1 ? S.avgSecPerStock : 2.79);
     const targets = [1316, 2365];
     return targets.map(t => ({
       universe: t,
@@ -82,11 +87,12 @@ fs.writeFileSync(path.join(DIR, "ttm-100-stock-summary.json"), JSON.stringify(su
 // anomalies: WARNING/극단/누락/restatement 종목 상세
 const anomalies = R.filter(r =>
   r.qualityStatus !== "PASS" ||
-  (r.gate && ((r.gate.incomeExtremeFlags || []).length || (r.gate.restatementFlags || []).length))
+  (r.gate && ((r.gate.significantExtremeFlags || []).length || (r.gate.restatementFlags || []).length))
 ).map(r => ({
   stockCode: r.stockCode, companyName: r.companyName, industry: r.industry, marketCapBand: r.marketCapBand,
   fsDiv: r.fsDiv, qualityStatus: r.qualityStatus,
-  incomeExtremeFlags: r.gate ? r.gate.incomeExtremeFlags : [],
+  significantExtremeFlags: r.gate ? r.gate.significantExtremeFlags : [],
+  transitionFlags: r.gate ? r.gate.transitionFlags : [],
   restatementFlags: r.gate ? r.gate.restatementFlags : [],
   officialIrMatched: r.gate ? r.gate.officialIrMatch && r.gate.officialIrMatch.matched : false,
   missingReports: (r.warningReasons || []).filter(w => w.includes("누락")),
@@ -105,7 +111,7 @@ for (const r of R) {
     r.qualityStatus, r.ttmRevenue, r.ttmOperatingIncome, r.ttmNetIncome,
     r.latestCurrentAssets, r.latestCurrentLiabilities, r.latestPpe, r.latestCash, r.latestTotalDebt,
     r.annualReconstruction ? r.annualReconstruction.diff : "",
-    (r.gate ? (r.gate.incomeExtremeFlags || []).length : 0),
+    (r.gate ? (r.gate.significantExtremeFlags || []).length : 0),
     '"' + (r.warningReasons || []).filter(w => w.includes("누락")).join(";") + '"'];
   lines.push(row.map(v => v == null ? "" : v).join(","));
 }

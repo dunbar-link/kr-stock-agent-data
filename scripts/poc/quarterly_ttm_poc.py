@@ -194,7 +194,8 @@ def detect_restatement(reports: dict, tol: float = 0.01) -> list:
     return flags
 
 
-def process_stock(stock: dict, corp_map: dict, stats: dict, confirmations: list) -> dict:
+def process_stock(stock: dict, corp_map: dict, stats: dict, confirmations: list,
+                  gate_thresholds: dict | None = None) -> dict:
     code = stock["code"]
     corp_meta = corp_map.get(code) or {}
     corp_code = C.safe_text(corp_meta.get("corp_code"))
@@ -285,8 +286,8 @@ def process_stock(stock: dict, corp_map: dict, stats: dict, confirmations: list)
 
     is_ttm_ok = all(metric_out[m]["ttmComplete"] for m in ("revenue", "operatingIncome", "netIncome"))
 
-    # --- 신규 게이트: 이상치 등급 분리 + 내부일관성 + 공식 IR 대조 ---
-    outliers = C.outlier_flags(single_by_metric, fy_by_metric, yoy_by_metric)
+    # --- 신규 게이트: 이상치 등급 분리(절대규모 반영) + 내부일관성 + 공식 IR 대조 ---
+    outliers = C.outlier_flags(single_by_metric, fy_by_metric, yoy_by_metric, gate_thresholds)
     # 내부일관성은 최신 보고서(2026Q1, 없으면 2025FY)의 손익 상단 계층으로 검증
     consistency_rows = reports.get((2026, C.Q1_REPORT_CODE)) or reports.get((2025, C.ANNUAL_REPORT_CODE)) or []
     consistency = C.income_statement_consistency(consistency_rows)
@@ -304,20 +305,27 @@ def process_stock(stock: dict, corp_map: dict, stats: dict, confirmations: list)
         ttm_complete=is_ttm_ok, annual_reconstructable=bool(ann.get("reconstructable")),
         internal_consistent=bool(consistency["consistent"]),
         revenue_hard=bool(outliers["revenueHard"]),
-        income_extreme=bool(outliers["incomeExtreme"]),
+        significant_extreme=bool(outliers["significantExtreme"]),
+        transition=bool(outliers["transitions"]),
         restatement=bool(restatement_flags), ir_matched=bool(ir["matched"]),
     )
+    transition_note = None
     if outliers["revenueHard"]:
         warnings.extend("데이터불일치(불가): " + s for s in outliers["revenueHard"])
-    if outliers["incomeExtreme"]:
-        warnings.extend("극단이상치: " + s for s in outliers["incomeExtreme"])
+    if outliers["significantExtreme"]:
+        warnings.extend("규모큰극단(외부확인): " + s for s in outliers["significantExtreme"])
+    if outliers["transitions"] and not outliers["significantExtreme"]:
+        transition_note = "; ".join(outliers["transitions"])
+        warnings.append("흑↔적 전환(정상 이벤트, 외부확인 불필요): " + transition_note)
+    if outliers["minorFlags"]:
+        warnings.extend("경미(정보): " + s for s in outliers["minorFlags"])
     if restatement_flags:
         warnings.extend("정정신호: " + s for s in restatement_flags)
     if not consistency["consistent"]:
         warnings.append("손익 내부일관성 실패: " + str(consistency["checks"]))
     if ir["matched"]:
         warnings.append(f"공식 IR 일치 → 실제 실적 확정 (출처: {ir['source']})")
-    has_sanity = bool(outliers["revenueHard"] or outliers["incomeExtreme"])
+    has_sanity = bool(outliers["revenueHard"] or outliers["significantExtreme"])
 
     return {
         "stockCode": code,
@@ -346,10 +354,13 @@ def process_stock(stock: dict, corp_map: dict, stats: dict, confirmations: list)
         "annualReconstruction": ann,
         "anomalyFlagged": has_sanity,
         "sanityFlags": sanity,
+        "transitionNote": transition_note,
         "gate": {
             "internalConsistency": consistency,
             "revenueHardFlags": outliers["revenueHard"],
-            "incomeExtremeFlags": outliers["incomeExtreme"],
+            "significantExtremeFlags": outliers["significantExtreme"],
+            "transitionFlags": outliers["transitions"],
+            "minorFlags": outliers["minorFlags"],
             "restatementFlags": restatement_flags,
             "officialIrMatch": {
                 "matched": ir["matched"], "matchedMetrics": ir.get("matchedMetrics", []),
@@ -402,6 +413,7 @@ def main() -> int:
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     stocks = config["stocks"]
     confirmations = config.get("officialIrConfirmations", [])
+    gate_thresholds = config.get("gateThresholds", {})
     if LIMIT > 0:
         stocks = stocks[:LIMIT]
     corp_map = load_corp_code_map()
@@ -413,7 +425,7 @@ def main() -> int:
 
     for i, stock in enumerate(stocks, 1):
         try:
-            res = process_stock(stock, corp_map, stats, confirmations)
+            res = process_stock(stock, corp_map, stats, confirmations, gate_thresholds)
         except RateLimited as e:
             print(f"[STOP] {e}")
             rate_limited = True
@@ -424,7 +436,8 @@ def main() -> int:
               f"(TTM매출={_fmt(res.get('ttmRevenue'))})")
 
     elapsed = time.time() - started
-    counts = {C.STATUS_PASS: 0, C.STATUS_PASS_IR: 0, C.STATUS_WARN_EXT: 0, C.STATUS_BLOCKED: 0}
+    counts = {C.STATUS_PASS: 0, C.STATUS_PASS_TRANSITION: 0, C.STATUS_PASS_IR: 0,
+              C.STATUS_WARN_EXT: 0, C.STATUS_BLOCKED: 0}
     for r in results:
         counts[r["qualityStatus"]] = counts.get(r["qualityStatus"], 0) + 1
 

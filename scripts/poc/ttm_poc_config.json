@@ -1,0 +1,46 @@
+{
+  "phase": "MF-TTM-DART-20-STOCK-POC",
+  "purpose": "DART 공식 분기보고서(11013/11012/11014/11011)로 대표 20종목의 최근 4개 단일분기 손익을 복원하고 TTM 계산 가능성을 검증하는 PoC. 전 종목 수집/운영 산식 변경/아이투자 자동화는 하지 않는다.",
+  "generatedFrom": {
+    "universe": "financial-universe-real.json (baseDate 2026-07-09, eligibleCount 1316)",
+    "rankings": "magic-formula-rankings.json (formulaVersion book-faithful-v1-2026-43B5, top100)",
+    "excludePolicy": "금융/유틸리티 업종 제외, 기존 공식 제외 종목 제외, dartLatestYear=2025 확정 종목만"
+  },
+  "ttmTarget": {
+    "asOf": "2026-07-09",
+    "latestQuarter": "2026Q1",
+    "windowQuarters": ["2026Q1", "2025Q4", "2025Q3", "2025Q2"],
+    "note": "2026-07 기준 최신 확보 가능 분기는 2026 1분기(11013, 5월 공시). 2026 반기(11012)는 8월 공시로 아직 없음."
+  },
+  "fsDivPolicy": "종목별 dartFsDiv(연간 기준)로 lock. CFS 우선, 별도만 있으면 OFS. 한 종목의 5개 보고서는 동일 fs_div만 사용(연결/별도 혼용 금지).",
+  "selectionCriteriaCoverage": {
+    "CFS_연결": 16,
+    "OFS_별도_fallback": 4,
+    "제조업": ["전기·전자", "기계·장비", "화학", "운송장비·부품", "음식료·담배", "비금속", "제약", "건설"],
+    "서비스업": ["IT 서비스", "유통", "일반서비스"],
+    "실적변동_큰_종목": ["336260", "122990", "000520", "006400", "000660", "068270"],
+    "magic_top_후보": ["046940"]
+  },
+  "stocks": [
+    { "code": "005930", "name": "삼성전자",   "fsDiv": "CFS", "industry": "전기·전자",     "category": "대형제조/12월결산 앵커", "reason": "연결 대형 제조. 누적차분·연간역산 기준 앵커." },
+    { "code": "000660", "name": "SK하이닉스", "fsDiv": "CFS", "industry": "전기·전자",     "category": "실적변동 큼",           "reason": "반도체 사이클로 분기 손익 변동 큼(opG=101). 단일분기 복원 스트레스." },
+    { "code": "006400", "name": "삼성SDI",   "fsDiv": "CFS", "industry": "전기·전자",     "category": "음수 영업이익",         "reason": "2차전지 적자전환(opG=-574). 음수 실적/부호 처리 검증." },
+    { "code": "336260", "name": "두산퓨얼셀", "fsDiv": "CFS", "industry": "전기·전자",     "category": "실적변동 극심",         "reason": "opG=-6011. 극단 변동·음수 스트레스." },
+    { "code": "122990", "name": "와이솔",     "fsDiv": "CFS", "industry": "전기·전자",     "category": "소형/실적변동",         "reason": "소형주(mc=1577) opG=-7966. 소형·변동 케이스." },
+    { "code": "051910", "name": "LG화학",    "fsDiv": "CFS", "industry": "화학",         "category": "제조/실적변동",         "reason": "화학 대형(opG=28.8). 업종 분산." },
+    { "code": "005380", "name": "현대차",     "fsDiv": "CFS", "industry": "운송장비·부품", "category": "대형제조",             "reason": "완성차 대형. 매출 규모 큼." },
+    { "code": "000270", "name": "기아",       "fsDiv": "CFS", "industry": "운송장비·부품", "category": "대형제조",             "reason": "완성차. opG=-28. 업종 중복 확보." },
+    { "code": "012330", "name": "현대모비스", "fsDiv": "CFS", "industry": "운송장비·부품", "category": "제조",                 "reason": "부품 대형. 안정 실적." },
+    { "code": "097950", "name": "CJ제일제당", "fsDiv": "CFS", "industry": "음식료·담배",   "category": "제조/방어",           "reason": "음식료. 계절성 있는 손익." },
+    { "code": "068270", "name": "셀트리온",   "fsDiv": "CFS", "industry": "제약",         "category": "실적변동",             "reason": "바이오 대형(opG=137). 합병 이슈로 분기 변동." },
+    { "code": "000520", "name": "삼일제약",   "fsDiv": "CFS", "industry": "제약",         "category": "소형/음수",           "reason": "소형 제약(opG=-19749). 극단 변동·정정공시 리스크." },
+    { "code": "035420", "name": "NAVER",     "fsDiv": "CFS", "industry": "IT 서비스",     "category": "서비스업",             "reason": "플랫폼 서비스. 서비스업 손익 구조." },
+    { "code": "035720", "name": "카카오",     "fsDiv": "CFS", "industry": "IT 서비스",     "category": "서비스/실적변동",       "reason": "플랫폼(opG=59). 서비스업 분산." },
+    { "code": "023530", "name": "롯데쇼핑",   "fsDiv": "CFS", "industry": "유통",         "category": "서비스/유통",         "reason": "오프라인 유통. 서비스업 매출 인식." },
+    { "code": "046940", "name": "우원개발",   "fsDiv": "CFS", "industry": "건설",         "category": "magic top1",         "reason": "현 magic 랭킹 1위 후보. magic top 대표." },
+    { "code": "058470", "name": "리노공업",   "fsDiv": "OFS", "industry": "전기·전자",     "category": "별도재무(OFS)",       "reason": "연결 없이 별도만. OFS fallback 검증." },
+    { "code": "403870", "name": "HPSP",      "fsDiv": "OFS", "industry": "기계·장비",     "category": "별도재무(OFS)/제조",   "reason": "반도체 장비 별도재무. OFS 제조 케이스." },
+    { "code": "064760", "name": "티씨케이",   "fsDiv": "OFS", "industry": "비금속",       "category": "별도재무(OFS)",       "reason": "소재 별도재무. OFS + 업종 분산(비금속)." },
+    { "code": "131970", "name": "두산테스나", "fsDiv": "OFS", "industry": "일반서비스",     "category": "별도재무(OFS)/서비스", "reason": "반도체 테스트 서비스 별도재무. OFS + 서비스업." }
+  ]
+}

@@ -165,6 +165,22 @@ def t15_txt_blocked_phrasing():
     assert "blocker 원인분리 지시문" in txt, "BLOCKED 요청 문구 누락"
 
 
+def t16_notepad_open_nonfatal():
+    # launcher가 예외를 던져도 open_in_notepad는 크래시 없이 False 반환(보고서 생성과 독립)
+    def boom(exe, path):
+        raise OSError("no gui session")
+    assert M.open_in_notepad("x.txt", launcher=boom) is False
+
+
+def t17_notepad_open_success_attempt():
+    calls = []
+    def ok(exe, path):
+        calls.append((exe, str(path)))
+    assert M.open_in_notepad("reports/x.txt", launcher=ok) is True
+    assert calls and calls[0][0].lower().endswith("notepad.exe"), calls
+    assert calls[0][1] == "reports/x.txt", calls
+
+
 TESTS = [
     ("1  어제 반영완료 → ALREADY_APPLIED PASS", t1_already_applied_pass),
     ("2  어제 미반영+PASS → READY_TO_CLOSEOUT", t2_ready_to_closeout_pass),
@@ -181,6 +197,8 @@ TESTS = [
     ("13 txt ALREADY_APPLIED 문구", t13_txt_already_applied_phrasing),
     ("14 txt READY_TO_CLOSEOUT 문구", t14_txt_ready_to_closeout_phrasing),
     ("15 txt BLOCKED 문구", t15_txt_blocked_phrasing),
+    ("16 notepad 실패 비치명 → False", t16_notepad_open_nonfatal),
+    ("17 notepad 실행 시도 성공 → True", t17_notepad_open_success_attempt),
 ]
 
 

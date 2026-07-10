@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import date as _date, time as _time, timedelta
@@ -412,6 +413,22 @@ def to_txt(o):
 
 # ============================== main ==============================
 
+def open_in_notepad(txt_path, *, launcher=None) -> bool:
+    """latest.txt를 notepad.exe로 연다(System32 전체경로 우선 + PATH fallback).
+
+    실패해도 예외 없이 False 반환 — notepad 실패는 보고서 생성 실패가 아니다(비대화형 세션 등).
+    launcher 주입 시 실제 프로세스 실행 0(테스트)."""
+    launcher = launcher or (lambda exe, path: subprocess.Popen([exe, str(path)]))  # noqa: S603
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    for exe in (os.path.join(system_root, "System32", "notepad.exe"), "notepad.exe"):
+        try:
+            launcher(exe, txt_path)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="마법공식 오전 통합 관찰 보고(read-only, write=reports 2개만)")
     ap.add_argument("--no-notepad", action="store_true", help="notepad.exe 열기 생략")
@@ -434,11 +451,7 @@ def main(argv=None) -> int:
 
     opened = False
     if not args.no_notepad:
-        try:
-            subprocess.Popen(["notepad.exe", str(txt_path)])  # noqa: S603,S607
-            opened = True
-        except Exception:  # noqa: BLE001
-            opened = False
+        opened = open_in_notepad(txt_path)
 
     if args.json:
         print(json.dumps({k: v for k, v in o.items() if k not in

@@ -45,7 +45,8 @@ ANNUAL_CACHE_DIR = CACHE_DIR / "dart-statements"            # 기존 연간(수�
 QUARTERLY_CACHE_DIR = CACHE_DIR / "dart-statements-quarterly"  # 분기 전용(신규)
 CORP_CODE_CACHE_PATH = CACHE_DIR / "dart-corp-codes.json"
 OUTPUT_DIR = CACHE_DIR / "ttm-poc-output"                   # PoC 결과(gitignore: _cache/)
-CONFIG_PATH = Path(__file__).resolve().parent / "ttm_poc_config.json"
+CONFIG_PATH = Path(os.environ.get("POC_CONFIG", "")) if os.environ.get("POC_CONFIG") \
+    else Path(__file__).resolve().parent / "ttm_poc_config.json"
 
 DART_URL = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
@@ -324,6 +325,7 @@ def process_stock(stock: dict, corp_map: dict, stats: dict, confirmations: list)
         "companyName": stock["name"],
         "industry": stock.get("industry"),
         "category": stock.get("category"),
+        "marketCapBand": stock.get("marketCapBand"),
         "fsDiv": fs_div,
         "fsDivFallback": fs_fallback,
         "fiscalYearEnd": "12(assumed)",
@@ -463,15 +465,16 @@ def main() -> int:
         "fullUniverseProjection": _project_full_universe(stats, results, elapsed),
     }
 
-    (OUTPUT_DIR / "ttm-poc-result.json").write_text(
+    out_basename = os.environ.get("POC_OUT_BASENAME", "ttm-poc-result")
+    (OUTPUT_DIR / f"{out_basename}.json").write_text(
         json.dumps({"summary": summary, "results": results}, ensure_ascii=False, indent=2),
         encoding="utf-8")
-    if results:
+    if results and out_basename == "ttm-poc-result":
         write_itooza_fixture(results)
 
     print("\n=== SUMMARY ===")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    print(f"\nwritten: {OUTPUT_DIR / 'ttm-poc-result.json'}")
+    print(f"\nwritten: {OUTPUT_DIR / (out_basename + '.json')}")
     return 0
 
 

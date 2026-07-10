@@ -102,6 +102,33 @@ TTM = 최근 연속 단일분기 4개 합
 - 예상 DART 콜 ≈ 6,580(5~6/종목), 저속 ≈ 1.1시간. 캐시 재사용 시 급감.
 - **공식 IR 검산은 전 종목이 아니라 극단 이상치 종목에만 적용.** 내부일관성 통과 일반 종목은 그대로 사용(PASS). 극단 이상치만 공식 IR/보조출처 확인 대상(WARNING_EXTERNAL) — 20종 표본에서 5건(=WARNING 후보를 일부러 담은 표본이라 실제 universe 비율은 더 낮음).
 
+## 100종목 규모 검증 (MF-TTM-DART-100-STOCK-SCALE-CHECK)
+
+`select_ttm_100.mjs`가 eligible universe에서 **결정론적으로 100종**을 선정(seed20 강제포함 + 시총밴드×업종 라운드로빈 + OFS≥18, 무작위 없음 → 재실행 md5 동일). `ttm_100_config.json`으로 실행:
+```
+node scripts/poc/select_ttm_100.mjs
+POC_CONFIG=...\ttm_100_config.json POC_OUT_BASENAME=ttm-100-stock-latest POC_SLEEP=0.4 py scripts\poc\quarterly_ttm_poc.py
+node scripts/poc/build_100_reports.mjs   # 요약/이상치/CSV
+```
+
+**선정 분포**: CFS 82 / OFS 18, 시총밴드 large 51·mid 30·small 19, 업종 21종, magic top100 5종 포함.
+
+**결과(2026-07-09, 100종)**:
+- 게이트: **PASS 59 / PASS_OFFICIAL_IR_CONFIRMED 2 / WARNING_EXTERNAL_CONFIRMATION 39 / BLOCKED 0**
+- 연간역산: **diff=0 96종 / 누락 4종**(신규상장). 내부일관성 위반 0. 계정 확보율: TTM 3종 95%(미완성 5종=신규상장 분기 부재), BS 5종 100%.
+- WARNING 39 = 극단이상치 36(흑↔적 36·YoY 17·분기>연간 24, 중복) + 보고서누락 5. → **소형·중형주 흑자↔적자 전환이 다수**. BLOCKED가 아니라 "외부확인 권장" 등급.
+- DART: 400콜/cacheHit 100/noData 8, status 020 **없음**, 평균 2.79초/종(총 ~4.6분).
+
+**전 universe 확장 추정(실측 기반, 종목당 신규 5콜·2.79초)**:
+| universe | DART콜 | 시간 |
+|---|---|---|
+| eligible 1,316 | ≈6,580 | ≈1.0시간 |
+| 비금융 2,365 | ≈11,825 | ≈1.8시간 |
+
+DART 일일한도(계정 통상 ~2만콜) > 필요콜 → 하루 내 가능. 재실행은 캐시로 급감.
+
+**권장 운영 배치**: 1회 전체수집은 eligible 1,316 기준 ~1시간·6,580콜로 **200종×7배치**(배치 간 여유)면 안전. 이후는 **공시시즌 증분**(분기보고서 신규 접수분만 갱신)으로 콜을 최소화. 공시 비수기엔 갱신 불필요. 극단 이상치(흑↔적/초고성장)만 공식 IR 확인 대상 — 100종 표본 기준 극단 36건이나, 흑↔적을 규모조건부로 완화하면 실질 외부확인 대상은 크게 감소(향후 게이트 튜닝 후보).
+
 ## 외부 검증 원천: 공식 IR 우선, 아이투자는 보조
 
 극단 이상치 검증의 1차 원천은 **회사 공식 IR(뉴스룸/실적발표)**다 — 로그인 불필요, 공개 웹. 삼성·SK는 공식 IR만으로 확정됐다(아이투자 미사용).

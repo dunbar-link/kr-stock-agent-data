@@ -207,6 +207,158 @@ def sanity_flags_single_quarter(single_by_metric: dict, fy_by_metric: dict,
     return flags
 
 
+# 손익계산서 내부일관성 검증용 추가 계정
+COGS_ACCOUNTS = ["ifrs-full_CostOfSales", "매출원가"]
+GROSS_PROFIT_ACCOUNTS = ["ifrs-full_GrossProfit", "매출총이익", "매출총이익(손실)"]
+
+
+def income_statement_consistency(rows: list[dict], tol: float = 0.02) -> dict:
+    """손익계산서 상단 계층 정합성 검증(같은 DART 행들의 내부 일관성).
+
+    극단적으로 큰 실적이라도 아래 항등/부등식이 성립하면 '데이터 오류'가 아니라 '실제 큰 값'으로 본다.
+    (대장 지시: 동일 DART 행의 내부일관성이 확인되면 실제 실적으로 인정)
+      - 매출 = 매출원가 + 매출총이익            (있을 때, tol 이내)
+      - 영업이익 <= 매출총이익                   (매출총이익 양수일 때)
+      - 매출총이익 <= 매출                       (매출 양수일 때)
+    계정이 없어 검사 못 하면 해당 항목은 skip(정합 간주). 전부 skip이면 consistent=True, checkedCount=0.
+    """
+    R = cumulative_is_value(rows, IS_ACCOUNTS["revenue"], ANNUAL_REPORT_CODE)["value"]
+    OP = cumulative_is_value(rows, IS_ACCOUNTS["operatingIncome"], ANNUAL_REPORT_CODE)["value"]
+    COGS = cumulative_is_value(rows, COGS_ACCOUNTS, ANNUAL_REPORT_CODE)["value"]
+    GP = cumulative_is_value(rows, GROSS_PROFIT_ACCOUNTS, ANNUAL_REPORT_CODE)["value"]
+
+    checks = []
+    ok = True
+    if R is not None and COGS is not None and GP is not None:
+        c = abs(R - (COGS + GP)) <= abs(R) * tol
+        checks.append(("revenue=COGS+grossProfit", c))
+        ok = ok and c
+    if GP is not None and OP is not None and GP >= 0:
+        c = OP <= abs(GP) * (1 + tol)
+        checks.append(("operatingIncome<=grossProfit", c))
+        ok = ok and c
+    if R is not None and GP is not None and R > 0:
+        c = GP <= R * (1 + tol)
+        checks.append(("grossProfit<=revenue", c))
+        ok = ok and c
+    return {"consistent": ok, "checks": checks, "checkedCount": len(checks)}
+
+
+def outlier_flags(single_by_metric: dict, fy_by_metric: dict,
+                  yoy_by_metric: dict, yoy_threshold: float = 3.0) -> dict:
+    """이상치 플래그를 두 등급으로 분리한다.
+
+    revenueHard: 진짜 물리적 불가능(→ BLOCKED). 매출 음수, 또는 '같은 회계연도(2025)' 분기 매출이 그 해 연간 매출 초과.
+    incomeExtreme: 경제적으로 드문 극단값(→ 불가능 아님, 외부확인 대상).
+        - 영업이익/순이익 단일분기가 직전 연간을 초과(같은 부호)  ← 다른 회계연도 비교라 초고성장 시 성립 가능
+        - 2026Q1 YoY 급변 또는 흑↔적 전환
+    핵심: '분기 > 직전 연간'을 손익에 대해 불가능으로 판정하지 않는다(2026Q1 vs 2025연간=다른 해).
+    """
+    revenue_hard = []
+    income_extreme = []
+
+    rev = single_by_metric.get("revenue", {})
+    fy_rev = fy_by_metric.get("revenue")
+    for q in SAME_YEAR_2025_QUARTERS:
+        v = rev.get(q)
+        if v is None:
+            continue
+        if v < 0:
+            revenue_hard.append(f"revenue {q}={_fmt(v)} < 0 (매출 음수)")
+        elif fy_rev is not None and fy_rev > 0 and v > fy_rev * 1.02:
+            revenue_hard.append(f"revenue {q}={_fmt(v)} > FY2025={_fmt(fy_rev)} (같은해 분기>연간)")
+
+    for metric in ("operatingIncome", "netIncome"):
+        singles = single_by_metric.get(metric, {})
+        fy = fy_by_metric.get(metric)
+        if fy is not None and fy > 0:
+            for q, v in singles.items():
+                if v is not None and v > fy * 1.02:
+                    income_extreme.append(f"{metric} {q}={_fmt(v)} > 직전연간 {_fmt(fy)} (극단, 외부확인 대상)")
+        prior = yoy_by_metric.get(metric)
+        q26 = singles.get("2026Q1")
+        if prior is not None and prior != 0 and q26 is not None:
+            flip = (q26 < 0) != (prior < 0)
+            growth = (q26 - prior) / abs(prior)
+            if flip:
+                income_extreme.append(f"{metric} 2026Q1 흑↔적 전환 ({_fmt(prior)}→{_fmt(q26)})")
+            elif abs(growth) > yoy_threshold:
+                income_extreme.append(f"{metric} 2026Q1 YoY {growth*100:.0f}% ({_fmt(prior)}→{_fmt(q26)})")
+    return {"revenueHard": revenue_hard, "incomeExtreme": income_extreme}
+
+
+def match_official_ir(code: str, quarter: str, dart_values: dict, confirmations: list) -> dict:
+    """공식 IR 확인 데이터(config)와 DART 단일분기 값을 종목-불문 일반 로직으로 대조.
+
+    confirmations 원소: {code, quarter, metrics:{metric:officialValue}, tolerancePct, source, checkedAt}
+    코드에 종목/숫자 하드코딩 없음 — 외부 검증 입력(config)만 참조한다.
+    반환: matched(모든 대조 metric 이 허용오차 내) / diffs / source / matchedMetrics
+    """
+    for c in confirmations:
+        if c.get("code") != code or c.get("quarter") != quarter:
+            continue
+        tol = float(c.get("tolerancePct", 0.01))
+        diffs = {}
+        matched_metrics = []
+        all_ok = True
+        for metric, official in (c.get("metrics") or {}).items():
+            dv = dart_values.get(metric)
+            offv = safe_number(official)
+            if dv is None or offv is None or offv == 0:
+                all_ok = False
+                continue
+            d = abs(dv - offv) / abs(offv)
+            diffs[metric] = d
+            if d <= tol:
+                matched_metrics.append(metric)
+            else:
+                all_ok = False
+        return {
+            "matched": all_ok and len(matched_metrics) > 0,
+            "diffs": diffs,
+            "matchedMetrics": matched_metrics,
+            "source": c.get("source"),
+            "checkedAt": c.get("checkedAt"),
+            "tolerancePct": tol,
+        }
+    return {"matched": False, "diffs": {}, "matchedMetrics": [], "source": None}
+
+
+# 게이트 상태
+STATUS_PASS = "PASS"
+STATUS_PASS_IR = "PASS_OFFICIAL_IR_CONFIRMED"
+STATUS_WARN_EXT = "WARNING_EXTERNAL_CONFIRMATION"
+STATUS_BLOCKED = "BLOCKED_DATA_INCONSISTENCY"
+
+
+def classify_ttm_quality(*, has_corp: bool, has_anchor: bool, missing_reports: bool,
+                         ttm_complete: bool, annual_reconstructable: bool,
+                         internal_consistent: bool, revenue_hard: bool,
+                         income_extreme: bool, restatement: bool, ir_matched: bool) -> str:
+    """새 4단계 게이트(순수 함수).
+
+    우선순위:
+      1) 매핑/앵커 실패, 매출 물리불가, 손익 내부일관성 실패 → BLOCKED_DATA_INCONSISTENCY
+      2) 보고서 누락/역산 불가/TTM 미완성 → WARNING_EXTERNAL_CONFIRMATION
+      3) 극단 이상치(손익):
+           - 공식 IR 일치 → PASS_OFFICIAL_IR_CONFIRMED
+           - 미확인       → WARNING_EXTERNAL_CONFIRMATION
+      4) 그 외 정상 → PASS
+
+    restatement(전년동기 비교표시 불일치)는 '당기값 기반 TTM'에 영향이 없다(비교표시 차이일 뿐,
+    연간역산·내부일관성으로 이미 무결성 확인). 따라서 상태를 낮추지 않고 정보로만 기록한다.
+    """
+    if not has_corp or not has_anchor:
+        return STATUS_BLOCKED
+    if revenue_hard or not internal_consistent:
+        return STATUS_BLOCKED
+    if missing_reports or not ttm_complete or not annual_reconstructable:
+        return STATUS_WARN_EXT
+    if income_extreme:
+        return STATUS_PASS_IR if ir_matched else STATUS_WARN_EXT
+    return STATUS_PASS
+
+
 def snapshot_bs_value(rows: list[dict], candidates: list[str], reprt_code: str) -> dict:
     """재무상태표 계정의 '최신 시점값'(thstrm_amount). 누적 아님."""
     row = _match_row(rows, BS_SJ_DIV, candidates)

@@ -21,6 +21,23 @@
     "실적변동_큰_종목": ["336260", "122990", "000520", "006400", "000660", "068270"],
     "magic_top_후보": ["046940"]
   },
+  "officialIrConfirmations": [
+    {
+      "code": "005930", "quarter": "2026Q1", "fsDiv": "CFS",
+      "metrics": { "revenue": 133900000000000, "operatingIncome": 57232800000000, "netIncome": 47225272000000 },
+      "tolerancePct": 0.01,
+      "source": "Samsung Newsroom 2026년 1분기 실적발표(연결): 매출 133.9조·영업이익 57조2328억",
+      "checkedAt": "2026-07-10"
+    },
+    {
+      "code": "000660", "quarter": "2026Q1", "fsDiv": "CFS",
+      "metrics": { "revenue": 52576300000000, "operatingIncome": 37610300000000, "netIncome": 40345900000000 },
+      "tolerancePct": 0.01,
+      "source": "SK hynix Newsroom 2026년 1분기 경영실적: 매출 52조5763억·영업이익 37조6103억·순이익 40조3459억",
+      "checkedAt": "2026-07-10"
+    }
+  ],
+  "officialIrConfirmationsNote": "이상치 종목의 외부 검증 '입력 데이터'다(코드 하드코딩 아님). classify_ttm_quality가 종목-불문 로직으로 dartValue와 허용오차 대조. 아이투자 값 아님·공식 IR(회사 뉴스룸) 기준. 값 복제로 운영 데이터를 덮어쓰지 않는다.",
   "stocks": [
     { "code": "005930", "name": "삼성전자",   "fsDiv": "CFS", "industry": "전기·전자",     "category": "대형제조/12월결산 앵커", "reason": "연결 대형 제조. 누적차분·연간역산 기준 앵커." },
     { "code": "000660", "name": "SK하이닉스", "fsDiv": "CFS", "industry": "전기·전자",     "category": "실적변동 큼",           "reason": "반도체 사이클로 분기 손익 변동 큼(opG=101). 단일분기 복원 스트레스." },

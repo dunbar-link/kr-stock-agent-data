@@ -171,7 +171,29 @@ def latest_bs_snapshot(reports: dict, metric: str):
     return {"value": None, "found": False, "snapshotFrom": None}
 
 
-def process_stock(stock: dict, corp_map: dict, stats: dict) -> dict:
+def detect_restatement(reports: dict, tol: float = 0.01) -> list:
+    """정정/재작성 신호: 2026Q1 보고서의 전년동기(frmtrm_q)가 2025Q1 원보고서 당기와 불일치하면 표시.
+
+    * 내 TTM 은 각 보고서의 '당기' 값만 쓰므로 이 불일치가 TTM 값을 오염시키지는 않는다(비교표시 차이).
+      다만 정정공시 가능성 신호이므로 외부확인 대상(WARNING_EXTERNAL_CONFIRMATION)으로 승격한다.
+    """
+    q26 = reports.get((2026, C.Q1_REPORT_CODE)) or []
+    q25 = reports.get((2025, C.Q1_REPORT_CODE)) or []
+    if not q26 or not q25:
+        return []
+    flags = []
+    for metric in ("revenue", "operatingIncome"):
+        cands = C.IS_ACCOUNTS[metric]
+        prior = C.prior_year_quarter_value(q26, cands)             # 2026보고서가 기재한 전년동기
+        origin = C.cumulative_is_value(q25, cands, C.Q1_REPORT_CODE)["value"]  # 2025Q1 원보고서 당기
+        if prior is None or origin is None or origin == 0:
+            continue
+        if abs(prior - origin) > abs(origin) * tol:
+            flags.append(f"{metric} 2026보고서_전년동기 vs 2025Q1원보고서 불일치")
+    return flags
+
+
+def process_stock(stock: dict, corp_map: dict, stats: dict, confirmations: list) -> dict:
     code = stock["code"]
     corp_meta = corp_map.get(code) or {}
     corp_code = C.safe_text(corp_meta.get("corp_code"))
@@ -180,7 +202,7 @@ def process_stock(stock: dict, corp_map: dict, stats: dict) -> dict:
     if not corp_code:
         return {
             "stockCode": code, "companyName": stock["name"], "corpCode": "",
-            "qualityStatus": "BLOCKED", "warningReasons": ["corp_code 매핑 실패"],
+            "qualityStatus": C.STATUS_BLOCKED, "warningReasons": ["corp_code 매핑 실패"],
         }
 
     fs_div, anchor_rows, fs_fallback = lock_fs_div(corp_code, stock.get("fsDiv", "CFS"), stats)
@@ -189,7 +211,7 @@ def process_stock(stock: dict, corp_map: dict, stats: dict) -> dict:
     if not anchor_rows:
         return {
             "stockCode": code, "companyName": stock["name"], "corpCode": corp_code,
-            "fsDiv": fs_div, "qualityStatus": "BLOCKED",
+            "fsDiv": fs_div, "qualityStatus": C.STATUS_BLOCKED,
             "warningReasons": ["2025 사업보고서(11011) 조회 실패 — 앵커 없음"],
         }
 
@@ -260,32 +282,41 @@ def process_stock(stock: dict, corp_map: dict, stats: dict) -> dict:
         if not snap["found"]:
             warnings.append(f"BS 결측: {metric}")
 
-    # 필수 IS 계정 확보율 & TTM 완성도로 품질 분류
     is_ttm_ok = all(metric_out[m]["ttmComplete"] for m in ("revenue", "operatingIncome", "netIncome"))
-    is_partial = any(metric_out[m]["ttm"] is not None for m in ("revenue", "operatingIncome", "netIncome"))
 
-    hard_flags = [s for s in sanity if s.startswith("[불가]")]
-    review_flags = [s for s in sanity if s.startswith("[검산]")]
+    # --- 신규 게이트: 이상치 등급 분리 + 내부일관성 + 공식 IR 대조 ---
+    outliers = C.outlier_flags(single_by_metric, fy_by_metric, yoy_by_metric)
+    # 내부일관성은 최신 보고서(2026Q1, 없으면 2025FY)의 손익 상단 계층으로 검증
+    consistency_rows = reports.get((2026, C.Q1_REPORT_CODE)) or reports.get((2025, C.ANNUAL_REPORT_CODE)) or []
+    consistency = C.income_statement_consistency(consistency_rows)
 
-    if not corp_code or not anchor_rows:
-        quality = "BLOCKED"
-    elif hard_flags:
-        # 매출 음수/분기>연간 = 데이터 무결성 실패
-        quality = "BLOCKED"
-    elif is_ttm_ok and not missing and ann.get("reconstructable"):
-        quality = "PASS"
-    elif is_partial:
-        quality = "WARNING"
-    else:
-        quality = "BLOCKED"
+    # 정정/재작성 신호: 2026Q1 보고서의 전년동기(frmtrm_q)가 2025Q1 원보고서 당기와 불일치
+    restatement_flags = detect_restatement(reports)
 
-    # WARNING 승격: fallback/모호/비단조/역산불일치/YoY검산
-    if quality == "PASS" and (
-        fs_fallback or ambiguous_hits or review_flags
-        or any("비단조" in w for w in warnings) or not ann.get("match", True)
-    ):
-        quality = "WARNING"
-    has_sanity = bool(sanity)
+    # 공식 IR 대조(2026Q1 단일분기 값 기준)
+    dart_q1 = {m: metric_out[m]["quarterValues"].get("2026Q1")
+               for m in ("revenue", "operatingIncome", "netIncome")}
+    ir = C.match_official_ir(code, "2026Q1", dart_q1, confirmations)
+
+    quality = C.classify_ttm_quality(
+        has_corp=bool(corp_code), has_anchor=bool(anchor_rows), missing_reports=bool(missing),
+        ttm_complete=is_ttm_ok, annual_reconstructable=bool(ann.get("reconstructable")),
+        internal_consistent=bool(consistency["consistent"]),
+        revenue_hard=bool(outliers["revenueHard"]),
+        income_extreme=bool(outliers["incomeExtreme"]),
+        restatement=bool(restatement_flags), ir_matched=bool(ir["matched"]),
+    )
+    if outliers["revenueHard"]:
+        warnings.extend("데이터불일치(불가): " + s for s in outliers["revenueHard"])
+    if outliers["incomeExtreme"]:
+        warnings.extend("극단이상치: " + s for s in outliers["incomeExtreme"])
+    if restatement_flags:
+        warnings.extend("정정신호: " + s for s in restatement_flags)
+    if not consistency["consistent"]:
+        warnings.append("손익 내부일관성 실패: " + str(consistency["checks"]))
+    if ir["matched"]:
+        warnings.append(f"공식 IR 일치 → 실제 실적 확정 (출처: {ir['source']})")
+    has_sanity = bool(outliers["revenueHard"] or outliers["incomeExtreme"])
 
     return {
         "stockCode": code,
@@ -313,6 +344,16 @@ def process_stock(stock: dict, corp_map: dict, stats: dict) -> dict:
         "annualReconstruction": ann,
         "anomalyFlagged": has_sanity,
         "sanityFlags": sanity,
+        "gate": {
+            "internalConsistency": consistency,
+            "revenueHardFlags": outliers["revenueHard"],
+            "incomeExtremeFlags": outliers["incomeExtreme"],
+            "restatementFlags": restatement_flags,
+            "officialIrMatch": {
+                "matched": ir["matched"], "matchedMetrics": ir.get("matchedMetrics", []),
+                "source": ir.get("source"), "diffs": ir.get("diffs", {}),
+            },
+        },
         "formulaTrace": {
             "revenue": metric_out["revenue"]["formulaTrace"],
             "operatingIncome": metric_out["operatingIncome"]["formulaTrace"],
@@ -358,6 +399,7 @@ def main() -> int:
     ensure_dirs()
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     stocks = config["stocks"]
+    confirmations = config.get("officialIrConfirmations", [])
     if LIMIT > 0:
         stocks = stocks[:LIMIT]
     corp_map = load_corp_code_map()
@@ -369,7 +411,7 @@ def main() -> int:
 
     for i, stock in enumerate(stocks, 1):
         try:
-            res = process_stock(stock, corp_map, stats)
+            res = process_stock(stock, corp_map, stats, confirmations)
         except RateLimited as e:
             print(f"[STOP] {e}")
             rate_limited = True
@@ -380,7 +422,7 @@ def main() -> int:
               f"(TTM매출={_fmt(res.get('ttmRevenue'))})")
 
     elapsed = time.time() - started
-    counts = {"PASS": 0, "WARNING": 0, "BLOCKED": 0}
+    counts = {C.STATUS_PASS: 0, C.STATUS_PASS_IR: 0, C.STATUS_WARN_EXT: 0, C.STATUS_BLOCKED: 0}
     for r in results:
         counts[r["qualityStatus"]] = counts.get(r["qualityStatus"], 0) + 1
 

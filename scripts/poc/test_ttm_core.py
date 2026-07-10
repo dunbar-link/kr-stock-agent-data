@@ -244,6 +244,109 @@ def test_prior_year_quarter_extraction():
     check("prior-year quarter = frmtrm_q_amount", prior == 79, str(prior))
 
 
+# ---------- 신규 게이트(IR 재분류) 테스트 ----------
+
+def _samsung_like_is_rows():
+    # 매출 133.87조 = 매출원가 51.96 + 매출총이익 81.91, 영업익 57.23 <= 매출총이익 → 내부일관
+    return [
+        is_row("ifrs-full_Revenue", "매출액", amount=133873444000000),
+        is_row("ifrs-full_CostOfSales", "매출원가", amount=51960271000000),
+        is_row("ifrs-full_GrossProfit", "매출총이익", amount=81913173000000),
+        is_row("dart_OperatingIncomeLoss", "영업이익", amount=57232797000000),
+    ]
+
+
+def test_internal_consistency_pass():
+    r = C.income_statement_consistency(_samsung_like_is_rows())
+    check("internal consistency: samsung-like PASS", r["consistent"] and r["checkedCount"] == 3, str(r))
+
+
+def test_internal_consistency_fail():
+    # 영업이익(90) > 매출총이익(81.9) → 계층 위반
+    rows = _samsung_like_is_rows()
+    rows[3] = is_row("dart_OperatingIncomeLoss", "영업이익", amount=90000000000000)
+    r = C.income_statement_consistency(rows)
+    check("internal consistency: OP>GP FAIL", not r["consistent"], str(r))
+
+
+def test_outlier_income_extreme_not_hard():
+    # 영업이익 2026Q1(57조) > 직전연간(43조) → incomeExtreme (revenueHard 아님)
+    singles = {"revenue": {"2026Q1": 133.0, "2025Q4": 93.0, "2025Q3": 86.0, "2025Q2": 74.0},
+               "operatingIncome": {"2026Q1": 57.0, "2025Q4": 20.0, "2025Q3": 12.0, "2025Q2": 4.7},
+               "netIncome": {"2026Q1": 47.0, "2025Q4": 19.0, "2025Q3": 12.0, "2025Q2": 5.0}}
+    fy = {"revenue": 333.0, "operatingIncome": 43.0, "netIncome": 45.0}
+    yoy = {"operatingIncome": 6.7, "netIncome": 8.2, "revenue": 79.0}
+    o = C.outlier_flags(singles, fy, yoy)
+    check("outlier: op>FY is incomeExtreme", any("operatingIncome" in f for f in o["incomeExtreme"]), str(o))
+    check("outlier: revenue not hard-flagged", o["revenueHard"] == [], str(o))
+
+
+def test_outlier_revenue_hard():
+    # 같은해 매출 분기 > 연간 → revenueHard
+    singles = {"revenue": {"2026Q1": 80.0, "2025Q4": 400.0, "2025Q3": 86.0, "2025Q2": 74.0}}
+    fy = {"revenue": 333.0}
+    o = C.outlier_flags(singles, fy, {})
+    check("outlier: revenue quarter>FY is hard", any("revenue" in f for f in o["revenueHard"]), str(o))
+
+
+def test_match_official_ir_config_driven():
+    conf = [{"code": "005930", "quarter": "2026Q1",
+             "metrics": {"operatingIncome": 57232800000000, "revenue": 133900000000000},
+             "tolerancePct": 0.01, "source": "IR"}]
+    dart = {"operatingIncome": 57232797000000, "revenue": 133873444000000, "netIncome": 47225272000000}
+    m = C.match_official_ir("005930", "2026Q1", dart, conf)
+    check("IR match: 삼성 within tol → matched", m["matched"], str(m))
+    # 하드코딩 아님: config 에 없는 종목은 matched False (일반 로직)
+    m2 = C.match_official_ir("999999", "2026Q1", dart, conf)
+    check("IR match: 미등록 종목 → not matched (config-driven)", not m2["matched"], str(m2))
+    # 오차 초과 → not matched
+    m3 = C.match_official_ir("005930", "2026Q1", {"operatingIncome": 40000000000000, "revenue": 133900000000000}, conf)
+    check("IR match: 오차 초과 → not matched", not m3["matched"], str(m3))
+
+
+def test_gate_extreme_with_ir_confirmed():
+    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
+                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
+                               revenue_hard=False, income_extreme=True, restatement=False, ir_matched=True)
+    check("gate: 극단+IR일치 → PASS_OFFICIAL_IR_CONFIRMED", s == C.STATUS_PASS_IR, s)
+
+
+def test_gate_extreme_without_ir():
+    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
+                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
+                               revenue_hard=False, income_extreme=True, restatement=False, ir_matched=False)
+    check("gate: 극단+IR미확인 → WARNING_EXTERNAL", s == C.STATUS_WARN_EXT, s)
+
+
+def test_gate_internal_inconsistency_blocked():
+    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
+                               ttm_complete=True, annual_reconstructable=True, internal_consistent=False,
+                               revenue_hard=False, income_extreme=True, restatement=False, ir_matched=True)
+    check("gate: 내부일관성 실패 → BLOCKED(예외없음)", s == C.STATUS_BLOCKED, s)
+
+
+def test_gate_revenue_hard_blocked():
+    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
+                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
+                               revenue_hard=True, income_extreme=False, restatement=False, ir_matched=False)
+    check("gate: 매출 물리불가 → BLOCKED", s == C.STATUS_BLOCKED, s)
+
+
+def test_gate_normal_pass():
+    s = C.classify_ttm_quality(has_corp=True, has_anchor=True, missing_reports=False,
+                               ttm_complete=True, annual_reconstructable=True, internal_consistent=True,
+                               revenue_hard=False, income_extreme=False, restatement=False, ir_matched=False)
+    check("gate: 정상 → PASS", s == C.STATUS_PASS, s)
+
+
+def test_gate_no_company_hardcode():
+    # 기업명/코드 하드코딩 없이, 임의 코드라도 config 매칭이면 동일하게 동작
+    conf = [{"code": "ABC123", "quarter": "2099Q9", "metrics": {"operatingIncome": 100},
+             "tolerancePct": 0.01, "source": "x"}]
+    m = C.match_official_ir("ABC123", "2099Q9", {"operatingIncome": 100}, conf)
+    check("gate: 종목 불문 config 매칭 동작", m["matched"], str(m))
+
+
 def main():
     tests = [
         test_normal_cfs_ttm, test_ofs_labeling, test_missing_one_report,
@@ -254,6 +357,12 @@ def main():
         test_sanity_revenue_impossible_blocked, test_sanity_income_yoy_review,
         test_sanity_income_sign_no_false_positive, test_sanity_clean_passes,
         test_prior_year_quarter_extraction,
+        test_internal_consistency_pass, test_internal_consistency_fail,
+        test_outlier_income_extreme_not_hard, test_outlier_revenue_hard,
+        test_match_official_ir_config_driven,
+        test_gate_extreme_with_ir_confirmed, test_gate_extreme_without_ir,
+        test_gate_internal_inconsistency_blocked, test_gate_revenue_hard_blocked,
+        test_gate_normal_pass, test_gate_no_company_hardcode,
     ]
     print("=== test_ttm_core ===")
     for t in tests:

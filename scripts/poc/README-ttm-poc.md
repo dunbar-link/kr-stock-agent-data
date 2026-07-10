@@ -149,6 +149,34 @@ DART 일일한도(계정 통상 ~2만콜) > 필요콜 → 하루 내 가능. 재
 
 **권장 운영 배치**: 1회 전체수집은 eligible 1,316 기준 ~1시간·6,580콜로 **200종×7배치**(배치 간 여유)면 안전. 이후는 **공시시즌 증분**(분기보고서 신규 접수분만 갱신)으로 콜을 최소화. 공시 비수기엔 갱신 불필요. 극단 이상치(흑↔적/초고성장)만 공식 IR 확인 대상 — 100종 표본 기준 극단 36건이나, 흑↔적을 규모조건부로 완화하면 실질 외부확인 대상은 크게 감소(향후 게이트 튜닝 후보).
 
+## eligible 배치 실행 프레임워크 (MF-TTM-ELIGIBLE-BATCH-RUNNER-PREP)
+
+향후 eligible 전체를 **200종×배치로 저속·재개 가능하게** 수집하기 위한 준비. 기존 PoC 코드/캐시를 재사용(새 프레임워크 아님). **이번 단계에서 실제 DART 호출 0**(기본 안전모드).
+
+```
+node scripts/poc/build_batch_manifest.mjs         # 대상 선정 + 배치 분할(결정론). 전체 manifest→_cache(gitignore)
+py scripts/poc/batch_runner.py --batch-id batch-01 --dry-run   # 계획만(호출 0)
+py scripts/poc/batch_runner.py --batch-id batch-01 --offline   # 캐시만 재계산(호출 0)
+py scripts/poc/batch_runner.py --batch-id batch-01 --real-fetch --confirm RUN_TTM_BACKFILL_2026-07-09_batch-01  # 승인 필요(미실행)
+```
+
+**대상(eligibilityFilter, config)**: 비금융/유틸/부동산 제외 + 2025결산 + marketCap≥300억 + opMargin>0 → **1366종**(magic 공식 eligible 1366≈1316 근사; EBIT 유효성=opMargin>0 근사, 산식 재구현 안 함). 결정론 정렬(marketCap↓, tie=code) → **7배치**(200×6 + 166). 누락 0·중복 0·종목당 1배치.
+
+**배치 실행기 옵션**: `--batch-id --dry-run --offline --real-fetch --confirm --resume --max-api-calls --sleep-seconds --stop-on-020 --output-dir`. **기본은 dry-run**(무옵션 시). real-fetch는 `--confirm RUN_TTM_BACKFILL_<baseDate>_<batchId>` 유효 토큰 필수.
+
+**상태·재개**(state 파일 `_cache/.../batch-state-<id>.json`, gitignore): 종목별 PENDING/RUNNING/COMPLETE/PARTIAL/RATE_LIMITED/FAILED/SKIPPED_CACHE_HIT. `--resume`은 COMPLETE/SKIPPED 재호출 안 함. 캐시 완비 종목은 real-fetch에서 SKIPPED_CACHE_HIT(재호출 0). **status 020 → RATE_LIMITED 저장 + 즉시 중단**(자동 재시도 없음), resume 인덱스 기록. 상태파일에 키/URL키/쿠키/토큰 **미저장**.
+
+**증분 수집 모드**(설계): initial-backfill(200종 단위) / disclosure-incremental(신규 공시 종목만) / retry-failed(실패·누락만, backoff) / offline-recompute(호출 0, 캐시로 게이트 재계산). 공시 접수목록 대량 조회는 새 API 구조 필요 → 설계·fixture까지만, 이번 범위 확장 안 함.
+
+**설정 단일 출처(`batchConfig`)**: batchSize 200 · requestSleepSeconds 0.4 · maxApiCallsPerBatch 1200 · retryCount 2 · backoffSeconds 60 · stopOnStatus020 true. 기업별/종목별 예외 없음.
+
+**예상 운영량(실측 5콜·2.79초/종 기반)**:
+- 최초 backfill: pending 1291종 × 5 ≈ **6,455 신규콜**, cache hit 75종. 배치당 ~9~10분, 7배치 ≈ **1.1시간**.
+- 저장용량: 1366×5 ≈ 6,830 분기캐시 파일 ≈ 200MB. DART 일일한도(~2만콜) > 필요콜.
+- 게이트 예상(100종 표본 비율): WARNING_EXTERNAL ≈ 11%(≈150종), 공식 IR 확인 대상(규모큰극단) ≈ 6%(≈82종) — 사람 검토 가능 수준.
+
+**실제 전체 수집 승인 게이트**: real-fetch·연속 배치·운영 반영·공식 산식·public/canonical·scheduler·push/deploy는 **대장 명시 승인** 필요. 승인 토큰 `RUN_TTM_BACKFILL_<baseDate>_<batchId>`은 이번 단계에서 설계·검증만(사용 안 함). manifest/dry-run/offline/캐시검증/테스트/통계는 자동 허용.
+
 ## 외부 검증 원천: 공식 IR 우선, 아이투자는 보조
 
 극단 이상치 검증의 1차 원천은 **회사 공식 IR(뉴스룸/실적발표)**다 — 로그인 불필요, 공개 웹. 삼성·SK는 공식 IR만으로 확정됐다(아이투자 미사용).

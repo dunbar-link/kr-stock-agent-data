@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "1.0.0",
+  "universeBaseDate": "2026-07-09",
+  "eligibleCount": 1366,
+  "batchSize": 200,
+  "batchCount": 7,
+  "integrity": {
+    "total": 1366,
+    "duplicates": 0,
+    "byBatch": {
+      "batch-01": 200,
+      "batch-02": 200,
+      "batch-03": 200,
+      "batch-04": 200,
+      "batch-05": 200,
+      "batch-06": 200,
+      "batch-07": 166
+    }
+  },
+  "cacheStatusAgg": {
+    "cached": 75,
+    "pending": 1291
+  },
+  "note": "전체 manifest 는 _cache(gitignore)에 생성. 이 파일은 소형 요약+배치별 샘플 3종만(commit).",
+  "batchSamples": {
+    "batch-01": [
+      {
+        "stockCode": "005930",
+        "companyName": "삼성전자",
+        "fsDiv": "CFS",
+        "cacheStatus": "cached"
+      },
+      {
+        "stockCode": "000660",
+        "companyName": "SK하이닉스",
+        "fsDiv": "CFS",
+        "cacheStatus": "cached"
+      },
+      {
+        "stockCode": "009150",
+        "companyName": "삼성전기",
+        "fsDiv": "CFS",
+        "cacheStatus": "cached"
+      }
+    ],
+    "batch-02": [
+      {
+        "stockCode": "437730",
+        "companyName": "삼현",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "001820",
+        "companyName": "삼화콘덴서",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "057050",
+        "companyName": "현대홈쇼핑",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      }
+    ],
+    "batch-03": [
+      {
+        "stockCode": "007690",
+        "companyName": "국도화학",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "005950",
+        "companyName": "이수화학",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "017900",
+        "companyName": "광전자",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      }
+    ],
+    "batch-04": [
+      {
+        "stockCode": "091580",
+        "companyName": "상신이디피",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "003220",
+        "companyName": "대원제약",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "098120",
+        "companyName": "마이크로컨텍솔",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      }
+    ],
+    "batch-05": [
+      {
+        "stockCode": "163730",
+        "companyName": "핑거",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "051160",
+        "companyName": "지어소프트",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "080420",
+        "companyName": "모다이노칩",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      }
+    ],
+    "batch-06": [
+      {
+        "stockCode": "067370",
+        "companyName": "선바이오",
+        "fsDiv": "OFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "066700",
+        "companyName": "테라젠이텍스",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "006660",
+        "companyName": "삼성공조",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      }
+    ],
+    "batch-07": [
+      {
+        "stockCode": "238120",
+        "companyName": "얼라인드",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "052790",
+        "companyName": "액토즈소프트",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      },
+      {
+        "stockCode": "099220",
+        "companyName": "SDN",
+        "fsDiv": "CFS",
+        "cacheStatus": "pending"
+      }
+    ]
+  }
+}

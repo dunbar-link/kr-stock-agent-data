@@ -65,6 +65,7 @@ def plan(rankings_path, *, repo1_path=REPO1_PUBLIC_PATH, now=None) -> dict:
         "status": "PLAN_OK", "stage": "PUBLISH_RANKINGS", "mode": "plan",
         "updateNeeded": cur != rankings, "key": RANKINGS_KEY,
         "dataDate": rankings.get("dataDate"), "signalAsOfDate": rankings.get("signalAsOfDate"),
+        "rankingScope": rankings.get("rankingScope"), "eligibleCount": rankings.get("eligibleCount"),
         "cheapTop100Count": len(rankings.get("cheapTop100") or []),
         "qualityTop100Count": len(rankings.get("qualityTop100") or []),
         "combinedTop10Count": len(rankings.get("combinedTop10") or []),

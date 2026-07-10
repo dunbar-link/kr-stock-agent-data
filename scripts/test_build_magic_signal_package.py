@@ -376,6 +376,54 @@ def t28_forward_path_production_unchanged():
     assert before == after, "production JSON 불변(전진 경로)"
 
 
+def t29_global_ranking_arrays():
+    # MF-GLOBAL-RANKINGS-PIPELINE: rankings.json에 전체 universe 기준 value/profitability top100 추가.
+    # fake_ranking은 11개(valueRank/profitabilityRank=1..11) 생성 → global 배열 존재·정렬·메타 검증.
+    tmp = tempfile.mkdtemp()
+    try:
+        out = Path(tmp) / SIGNAL
+        r = call(output_dir=str(out))
+        assert r["packageStatus"] == P.READY, r["packageStatus"]
+        rk = json.loads((out / "rankings.json").read_text(encoding="utf-8"))
+        # 신규 필드 존재 + scope 메타
+        assert rk["rankingScope"] == "global-eligible-universe", rk.get("rankingScope")
+        assert rk["globalRankingSchemaVersion"] == P.GLOBAL_RANKING_SCHEMA_VERSION
+        assert rk["eligibleCount"] == 11, rk.get("eligibleCount")
+        vt, pt = rk["valueTop100"], rk["profitabilityTop100"]
+        assert len(vt) == 11 and len(pt) == 11, (len(vt), len(pt))
+        # value는 valueRank 오름차순, profitability는 profitabilityRank 오름차순(전체 universe 기준)
+        assert [x["valueRank"] for x in vt] == list(range(1, 12)), [x["valueRank"] for x in vt]
+        assert [x["profitabilityRank"] for x in pt] == list(range(1, 12)), [x["profitabilityRank"] for x in pt]
+        # 기존 top10/top100 회귀 없음(additive)
+        assert len(rk["top10"]) == 10 and len(rk["top100"]) == 11
+        # 체결가 필드 미포함(감사 규칙 유지)
+        for x in vt + pt:
+            assert "buyOpenPrice" not in x and "executionPrice" not in x
+        # manifest 카운트 반영
+        man = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        assert man["valueTop100Count"] == 11 and man["profitabilityTop100Count"] == 11
+        assert man["rankingScope"] == "global-eligible-universe"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def t30_global_end_to_end_with_build_rankings():
+    # signal package → build_magic_rankings 파이프라인: cheap/quality 표시 순위 1..N 연속.
+    import build_magic_rankings as BR
+    tmp = tempfile.mkdtemp()
+    try:
+        out = Path(tmp) / SIGNAL
+        r = call(output_dir=str(out))
+        assert r["packageStatus"] == P.READY, r["packageStatus"]
+        res = BR.build_magic_rankings(out / "rankings.json")
+        assert res["rankingScope"] == "global-eligible-universe", res["rankingScope"]
+        assert [c["cheapRank"] for c in res["cheapTop100"]] == list(range(1, 12))
+        assert [c["qualityRank"] for c in res["qualityTop100"]] == list(range(1, 12))
+        assert len(res["combinedTop10"]) == 10
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 TESTS = [
     ("1  장마감 전→MARKET_NOT_CLOSED(생성0)", t1_market_not_closed),
     ("2  tz-naive now/close→BLOCKED", t2_tz_naive_blocked),
@@ -405,6 +453,8 @@ TESTS = [
     ("26 중간 거래일 스킵 candidate→BLOCKED", t26_candidate_skips_trading_day_blocked),
     ("27 기존 TEMP 패키지 read-only 다음거래일+불변", t27_existing_package_readonly_next_exec),
     ("28 전진 경로 production 불변", t28_forward_path_production_unchanged),
+    ("29 global value/profitability top100 배열 생성", t29_global_ranking_arrays),
+    ("30 signal→build_rankings global 1..N 연속(E2E)", t30_global_end_to_end_with_build_rankings),
 ]
 
 

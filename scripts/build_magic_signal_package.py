@@ -61,6 +61,8 @@ BLOCKED_NEXT_EXECUTION_DATE_UNAVAILABLE = "BLOCKED_NEXT_EXECUTION_DATE_UNAVAILAB
 DEFAULT_MIN_VALID_PRICE_FRACTION = 0.5
 DEFAULT_TOP10_N = 10
 DEFAULT_TOP_AUDIT_N = 100
+DEFAULT_GLOBAL_TOP_N = 100                 # 전체 유효 universe 기준 독립 순위 top100(Case B 해소)
+GLOBAL_RANKING_SCHEMA_VERSION = "global-rankings-v1"
 
 # KRX 휴장일(주말 외). 다음 *체결일*은 미래라 pykrx(OHLCV 기반 get_business_days/OHLCV)로는 알 수 없다
 # — 미래 날짜는 시세가 없어 빈 결과/예외가 난다(45-E5.2 실증). 따라서 주말 + 아래 휴장표로 전진 계산한다.
@@ -463,6 +465,16 @@ def build_signal_package(signal_date: str, *, now=None, market_close_at=None, ou
         top10 = [_top_row(s) for s in final[:DEFAULT_TOP10_N]]
         top_audit = [_top_row(s) for s in final[:DEFAULT_TOP_AUDIT_N]]
 
+        # 전체 유효 universe 기준 *독립* 순위 top100. final은 valueRank/profitabilityRank가
+        # eligible 전체에서 dense 1..N(코드 tiebreak로 unique)이라, 각 rank로 정렬해 자르면
+        # 표시 순위가 1~100 연속이 된다. combined top100/top10과 달리 후보 subset이 아니다.
+        value_top100 = [_top_row(s) for s in
+                        sorted(final, key=lambda s: (s.get("valueRank") if s.get("valueRank") is not None else 1 << 30,
+                                                     str(s.get("code") or "")))[:DEFAULT_GLOBAL_TOP_N]]
+        profitability_top100 = [_top_row(s) for s in
+                                sorted(final, key=lambda s: (s.get("profitabilityRank") if s.get("profitabilityRank") is not None else 1 << 30,
+                                                             str(s.get("code") or "")))[:DEFAULT_GLOBAL_TOP_N]]
+
         universe_bytes = _canonical_bytes(payload)
         universe_sha = _sha256_bytes(universe_bytes)
 
@@ -479,6 +491,12 @@ def build_signal_package(signal_date: str, *, now=None, market_close_at=None, ou
             "rankingCount": len(final),
             "top10": top10,
             "top100": top_audit,
+            # --- MF-GLOBAL-RANKINGS-PIPELINE: additive global 순위 원천 ---
+            "globalRankingSchemaVersion": GLOBAL_RANKING_SCHEMA_VERSION,
+            "rankingScope": "global-eligible-universe",
+            "eligibleCount": len(final),
+            "valueTop100": value_top100,
+            "profitabilityTop100": profitability_top100,
         }
         rankings_bytes = _canonical_bytes(rankings_doc)
         rankings_sha = _sha256_bytes(rankings_bytes)
@@ -515,6 +533,9 @@ def build_signal_package(signal_date: str, *, now=None, market_close_at=None, ou
             "rankingsSha256": rankings_sha,
             "rankingCount": len(final),
             "top10Count": len(top10),
+            "valueTop100Count": len(value_top100),
+            "profitabilityTop100Count": len(profitability_top100),
+            "rankingScope": "global-eligible-universe",
             "financialInputManifest": fin_manifest,
             "warnings": warnings,
             "createdAt": now_dt.isoformat(),

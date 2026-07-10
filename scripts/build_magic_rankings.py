@@ -18,6 +18,10 @@ from pathlib import Path
 SCHEMA_VERSION = "magic-official-rankings-v1"
 RANKINGS_KEY = "magicOfficialRankings"
 
+# rankingScope: 신규 signal은 전체 유효 universe 기준(global), 구형 signal은 combined 후보 subset.
+SCOPE_GLOBAL = "global-eligible-universe"
+SCOPE_SUBSET = "combined-subset"
+
 # evidenceCompleteness 판정용 필수 원값(모두 존재해야 true).
 _REQUIRED = ("ebit", "enterpriseValue", "investedCapital", "currentAssets",
              "currentLiabilities", "propertyPlantAndEquipment", "totalLiabilities",
@@ -87,17 +91,51 @@ def _rank_key(it: dict, key: str) -> float:
     return float(v) if isinstance(v, (int, float)) else 1e9
 
 
+def _global_list(rows, signal_as_of, kind: str, n: int) -> list:
+    """전체 universe 기준 원천(valueTop100/profitabilityTop100)을 표시용으로 변환.
+    - 표시 순위(cheapRank/qualityRank)는 목록 위치로 1..N *연속 강제*(원천에 gap이 있어도 보정).
+    - 원래 universe 순위는 universeCheapRank/universeQualityRank로 별도 보존(표시 rank와 혼합 금지).
+    kind='cheap'이면 valueRank 원천, 'quality'이면 profitabilityRank 원천."""
+    disp_key = "cheapRank" if kind == "cheap" else "qualityRank"
+    uni_key = "universeCheapRank" if kind == "cheap" else "universeQualityRank"
+    out = []
+    for i, r in enumerate(rows[:n], 1):
+        it = ranking_item(r, signal_as_of)
+        it[uni_key] = it.get(disp_key)   # 원천 universe 순위 보존
+        it[disp_key] = i                 # 표시 순위는 1..N 연속 강제
+        out.append(it)
+    return out
+
+
 def build_magic_rankings(rankings_path, *, cheap_n=100, quality_n=100, combined_n=10) -> dict:
     """signal rankings.json → magicOfficialRankings dict(cheapTop100/qualityTop100/combinedTop10).
-    write 0. top100 원값을 재계산 없이 명칭 매핑·정렬만 한다."""
+    write 0. 재계산 없이 명칭 매핑·정렬만 한다.
+    - 신규 signal(valueTop100/profitabilityTop100 존재): 전체 유효 universe 기준 독립 순위를
+      쓰고 cheapTop100/qualityTop100 표시 순위를 1~100 연속으로 부여(rankingScope=global).
+    - 구형 signal(해당 배열 없음): 기존대로 combined top100 후보를 각 순위로 정렬(rankingScope=subset).
+    combinedTop10은 두 경우 모두 combined top100 후보(top10)에서 동일하게 생성(회귀 없음)."""
     doc = json.loads(Path(rankings_path).read_text(encoding="utf-8"))
     top100 = doc.get("top100") or []
     signal_as_of = str(doc.get("signalAsOfDate") or "")
     items = [ranking_item(r, signal_as_of) for r in top100]
     ev_method = next((it["evMethod"] for it in items if it.get("evMethod")), None)
 
-    cheap = sorted(items, key=lambda it: (_rank_key(it, "cheapRank"), it["code"]))[:cheap_n]
-    quality = sorted(items, key=lambda it: (_rank_key(it, "qualityRank"), it["code"]))[:quality_n]
+    value_src = doc.get("valueTop100")
+    profit_src = doc.get("profitabilityTop100")
+    has_global = isinstance(value_src, list) and isinstance(profit_src, list) and value_src and profit_src
+
+    if has_global:
+        cheap = _global_list(value_src, signal_as_of, "cheap", cheap_n)
+        quality = _global_list(profit_src, signal_as_of, "quality", quality_n)
+        scope = SCOPE_GLOBAL
+        if ev_method is None:
+            ev_method = next((it["evMethod"] for it in cheap if it.get("evMethod")), None)
+    else:
+        cheap = sorted(items, key=lambda it: (_rank_key(it, "cheapRank"), it["code"]))[:cheap_n]
+        quality = sorted(items, key=lambda it: (_rank_key(it, "qualityRank"), it["code"]))[:quality_n]
+        scope = SCOPE_SUBSET
+
+    # combinedTop10은 항상 combined top100 후보(top10 subset)에서 생성 — 기존 결과 회귀 없음.
     combined = sorted(items, key=lambda it: (_rank_key(it, "magicScore"),
                                              _rank_key(it, "cheapRank"), it["code"]))[:combined_n]
     return {
@@ -108,6 +146,8 @@ def build_magic_rankings(rankings_path, *, cheap_n=100, quality_n=100, combined_
         "formulaMode": doc.get("formulaMode"),
         "evMethod": ev_method,
         "rankingCount": doc.get("rankingCount"),
+        "rankingScope": scope,
+        "eligibleCount": doc.get("eligibleCount"),
         "cheapTop100": cheap,
         "qualityTop100": quality,
         "combinedTop10": combined,
@@ -124,9 +164,9 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(out, ensure_ascii=False, indent=2))
     else:
-        print(f"cheapTop100={len(out['cheapTop100'])} qualityTop100={len(out['qualityTop100'])} "
-              f"combinedTop10={len(out['combinedTop10'])} evMethod={out['evMethod']} "
-              f"dataDate={out['dataDate']}")
+        print(f"scope={out['rankingScope']} cheapTop100={len(out['cheapTop100'])} "
+              f"qualityTop100={len(out['qualityTop100'])} combinedTop10={len(out['combinedTop10'])} "
+              f"evMethod={out['evMethod']} dataDate={out['dataDate']} eligibleCount={out['eligibleCount']}")
     return 0
 
 

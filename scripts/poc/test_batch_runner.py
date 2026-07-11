@@ -76,7 +76,10 @@ def test_offline_zero_calls(net):
 
 def test_020_stop_and_state():
     # process_stock 을 RateLimited 던지게 교체 → 즉시 중단·RATE_LIMITED 저장
+    # 실제 캐시 상태와 무관하게: cache_complete 를 False 로 패치(캐시 완비 종목도 process_stock 도달)
     orig = Q.process_stock
+    orig_cc = B.cache_complete
+    B.cache_complete = lambda *a, **k: False
     Q.process_stock = lambda *a, **k: (_ for _ in ()).throw(Q.RateLimited("mock 020"))
     try:
         bd = B.load_manifest()["universeBaseDate"]
@@ -88,11 +91,14 @@ def test_020_stop_and_state():
         check("020 → resume 인덱스 기록", st.get("resumeAfterSelectionIndex") is not None)
     finally:
         Q.process_stock = orig
+        B.cache_complete = orig_cc
 
 
 def test_fatal_dart_stop():
     # status 012(접근불가 IP)/901 = FatalDartError → 첫 종목에서 즉시 중단(전 종목 시도 안 함)
     orig = Q.process_stock
+    orig_cc = B.cache_complete
+    B.cache_complete = lambda *a, **k: False   # 캐시 상태 무관하게 process_stock 도달
     calls = {"n": 0}
 
     def fatal(*a, **k):
@@ -113,6 +119,7 @@ def test_fatal_dart_stop():
         check("fatal(012) → resume 인덱스 기록", st.get("resumeAfterSelectionIndex") is not None)
     finally:
         Q.process_stock = orig
+        B.cache_complete = orig_cc
 
 
 def test_resume_skips_completed():

@@ -202,6 +202,20 @@ py scripts/poc/batch_runner.py --batch-id batch-01 --real-fetch --confirm RUN_TT
 - **매출 음수(누적 역전)는 revenue_hard → BLOCKED 유지**가 정상. 정정공시로 최신본을 골라도 캐시 역전이 남으면 회사 공시 자체 모순 → TTM 제외.
 - 결과: BLOCKED 3→2(폴라리스 해제). 나머지 1,313종·삼성/SK IR 불변(퇴행 0).
 
+## TTM vs 연간 비교 대시보드 PoC (조회 전용, 운영 미반영)
+
+`build_ttm_comparison.py`가 **공식 연간 마법공식값(canonical 함수)** 과 **TTM 실험값**을 나란히 담은 비교 데이터셋을 만든다. REPO1 `app/internal/ttm-comparison`(nav 미노출 내부 route)이 소형 fixture(20종)로 조회.
+
+**산식 대응(Gate B0)**: annual EBIT = `dart_OperatingIncomeLoss`(영업이익, IS→CIS). TTM operatingIncome = 동일 계정의 최근 4분기 합 → **정의 동일(기간만 롤링)** → experimental 순위 산출 허용. EV=시총×1e8+총부채−현금, 투입자본=유동자산−유동부채+유형자산(모두 최신 분기말 BS).
+
+**포함/제외**: PASS·PASS_WITH_TRANSITION_NOTE·PASS_OFFICIAL_IR_CONFIRMED만 실험(1,213종). WARNING(101)·BLOCKED(2)·미완성은 제외(삭제 아님, 사유 목록 별도). experimental 순위 산출은 EBIT>0·투입자본>0·EV>0 유효 종목(1,162)만.
+
+**필드 분리**: `annual.*`(공식값) vs `ttmExperiment.experimental*`(실험값). 혼동 방지 접두어. 순위변화는 동일 실험집합 내 재순위(subset) 기준으로 계산(selection bias 최소화).
+
+**결과(전체 실험집합)**: 공식 top100 ∩ 실험 top100 = 63(신규진입 37/이탈 37). 평균 순위변화 0(subset zero-sum), 중앙 6, **50위+ 급변 957종** → TTM은 순위를 크게 흔든다(데이터 신선도 민감도 큼). *수익률 개선 주장 아님·백테스트 없음.*
+
+**UI(조회 전용)**: 요약카드·순위민감도·필터(검색/상태/급변)·비교테이블·종목상세(4분기 영업익·TTM합·최신BS기준일·공식값·제외사유). "운영 미반영/투자 추천 아님/비교용 PoC" 배지. 해석성(추천·상승가능성 등) 문구 없음.
+
 ## 운영 반영 정책 (다음 Phase용, 이번엔 반영 안 함)
 - **PASS / PASS_WITH_TRANSITION_NOTE / PASS_OFFICIAL_IR_CONFIRMED** = TTM 사용 후보.
 - **WARNING_EXTERNAL_CONFIRMATION** = 외부(공식 IR) 검산 전에는 공식 TTM 산출에서 제외하거나 별도 플래그.

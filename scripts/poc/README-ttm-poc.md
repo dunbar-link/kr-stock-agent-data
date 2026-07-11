@@ -222,6 +222,22 @@ py scripts/poc/batch_runner.py --batch-id batch-01 --real-fetch --confirm RUN_TT
 - **BLOCKED_DATA_INCONSISTENCY** = TTM 사용 금지.
 - **TTM 제외 ≠ 연간 마법공식 순위 제외**: TTM은 실험값. 기존 연간 공식값과 혼합하지 않는다. TTM에서 제외돼도 연간 magic eligible/순위는 불변.
 
+## Shadow Portfolio PoC (전진검증, 조회 전용)
+
+과거 백테스트가 데이터 누수로 불가([BACKTEST-FEASIBILITY-AUDIT](BACKTEST-FEASIBILITY-AUDIT.md))하므로, 오늘 시점에 두 전략을 freeze하고 미래 성과를 병렬 관찰한다(미래 데이터 → look-ahead·survivorship·restatement 원천 없음).
+
+```
+node ... (선행: build_ttm_comparison.py)
+py scripts/poc/build_shadow_freeze.py          # 공식 top30 / TTM top30 freeze
+py scripts/poc/shadow_portfolio.py --initialize # 계산기 dry-run(가격조회 0)
+```
+
+- **freeze(전략 A=공식 연간 top30, B=TTM 실험 top30)**: freezeDate=priceAsOfDate=universe baseDate. 재무 최신(2026Q1, 5월 공시) < 가격일 → 누수 없음. 동일가중(종목당 100만·초기 3,000만), 정수 주식, 잔여현금 기록. TTM top30은 PASS 계열만(WARNING/BLOCKED 미포함, 증명 필드). 교집합 19 / 공식전용 11 / TTM전용 11.
+- **계산기(shadow_portfolio.py)**: `compute_snapshot`(시장가치+현금−비용→총자산·수익률, 가격누락 임의보정 금지) · `performance`(누적·주간·MDD·변동성, turnover=0 buy-and-hold) · `is_duplicate_snapshot`(멱등). 기본 dry-run, `--real` 가격조회는 별도 승인. 거래정지/corporate-action/상장폐지 플래그.
+- **config(shadow_portfolio_config.json)**: 왕복비용 가정 0.4%(단정 아님), benchmark=KOSPI 단일, 리밸런싱 없음, 관찰 최소 6개월·권장 12개월.
+- **UI**: REPO1 `app/internal/ttm-shadow`(nav 미노출) — 두 전략 요약카드·교집합·보유종목표·스냅샷이력(관찰 전). "가상 포트폴리오·실주문 없음·투자 추천 아님" 배지, 우열 결론 문구 없음.
+- **자동 관찰(설계만)**: 매주 금요일 장 마감 후 종가 스냅샷 권장. read-only·runtime write·멱등·휴장 처리. 운영 파이프라인 영향 0. **스케줄러 등록은 별도 승인.**
+
 ## 외부 검증 원천: 공식 IR 우선, 아이투자는 보조
 
 극단 이상치 검증의 1차 원천은 **회사 공식 IR(뉴스룸/실적발표)**다 — 로그인 불필요, 공개 웹. 삼성·SK는 공식 IR만으로 확정됐다(아이투자 미사용).

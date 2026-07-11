@@ -1,0 +1,1121 @@
+{
+  "schemaVersion": "1.0.0",
+  "config": {
+    "portfolioSize": 30,
+    "weighting": "equal (종목당 가상 1,000,000원)",
+    "initialCapitalKrw": 30000000,
+    "perStockCapitalKrw": 1000000,
+    "transactionCostAssumption": {
+      "roundTripPct": 0.4,
+      "note": "왕복 비용 가정(매수 수수료+매도 수수료+거래세 대략). 비교용 동일 적용. 공식값처럼 단정하지 않음. 실제 비용은 증권사·세율에 따라 다름."
+    },
+    "benchmark": "KOSPI (단일. 새 복합 벤치마크 만들지 않음)",
+    "rebalancing": "없음. 최초 freeze 후 보유만 관찰(buy-and-hold)."
+  },
+  "sourceMetadata": {
+    "freezeId": "shadow-2026-07-10",
+    "freezeDate": "2026-07-10",
+    "priceAsOfDate": "2026-07-10",
+    "annualFinancialYear": 2025,
+    "ttmAsOfQuarter": "2026Q1",
+    "annualRankingGeneratedAt": "2026-07-10",
+    "ttmRankingGeneratedAt": "2026-07-10",
+    "sourceCommitAnnual": "beb28ea",
+    "sourceCommitTtm": "beb28ea",
+    "codeSetHash": "2e09bc01e6af6f92",
+    "leakageNote": "재무 최신=2026Q1(5월 공시) < 가격일 → look-ahead 없음. 발표일 이후 종가 사용."
+  },
+  "disclaimer": "가상 포트폴리오 · 실주문 없음 · 투자 추천 아님 · 통계적 우월성 주장 아님 · TTM은 실험값(공식 순위 미반영).",
+  "warningBlockedExcludedFromTtm": {
+    "ttmTop30HasNonPass": 0,
+    "codes": []
+  },
+  "overlap": {
+    "commonCount": 19,
+    "common": [
+      "001060",
+      "018290",
+      "019180",
+      "036120",
+      "037350",
+      "046940",
+      "052400",
+      "088130",
+      "100840",
+      "124500",
+      "136490",
+      "171090",
+      "184230",
+      "192080",
+      "215200",
+      "284740",
+      "383220",
+      "461300",
+      "484870"
+    ],
+    "annualOnly": [
+      "021240",
+      "030190",
+      "033500",
+      "036620",
+      "053580",
+      "066620",
+      "092130",
+      "114840",
+      "206650",
+      "339950",
+      "353810"
+    ],
+    "ttmOnly": [
+      "010280",
+      "052420",
+      "054040",
+      "080010",
+      "099410",
+      "100220",
+      "214180",
+      "259630",
+      "260970",
+      "263720",
+      "408920"
+    ]
+  },
+  "strategies": {
+    "annual": {
+      "strategyType": "OFFICIAL_ANNUAL",
+      "initialCapital": 30000000,
+      "cash": 254415.0,
+      "investedAmount": 29745585.0,
+      "holdings": [
+        {
+          "stockCode": "046940",
+          "companyName": "우원개발",
+          "industry": "건설",
+          "rankAtFreeze": 1,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 12,
+            "returnOnCapital": 0.844573,
+            "earningsYield": 0.483456
+          },
+          "entryPrice": 3630.0,
+          "shares": 275,
+          "investedAmount": 998250.0,
+          "weight": 0.033275,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "461300",
+          "companyName": "아이스크림미디어",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 2,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 23,
+            "returnOnCapital": 0.607281,
+            "earningsYield": 0.346407
+          },
+          "entryPrice": 15860.0,
+          "shares": 63,
+          "investedAmount": 999180.0,
+          "weight": 0.033306,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "088130",
+          "companyName": "동아엘텍",
+          "industry": "기계·장비",
+          "rankAtFreeze": 3,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 28,
+            "returnOnCapital": 0.572098,
+            "earningsYield": 0.269578
+          },
+          "entryPrice": 5210.0,
+          "shares": 191,
+          "investedAmount": 995110.0,
+          "weight": 0.03317,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "124500",
+          "companyName": "아이티센글로벌",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 4,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 32,
+            "returnOnCapital": 0.736034,
+            "earningsYield": 0.165122
+          },
+          "entryPrice": 21250.0,
+          "shares": 47,
+          "investedAmount": 998750.0,
+          "weight": 0.033292,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "184230",
+          "companyName": "SGA솔루션즈",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 5,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 39,
+            "returnOnCapital": 1.645894,
+            "earningsYield": 0.133109
+          },
+          "entryPrice": 1835.0,
+          "shares": 544,
+          "investedAmount": 998240.0,
+          "weight": 0.033275,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "171090",
+          "companyName": "선익시스템",
+          "industry": "기계·장비",
+          "rankAtFreeze": 6,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 42,
+            "returnOnCapital": 0.816288,
+            "earningsYield": 0.144933
+          },
+          "entryPrice": 54800.0,
+          "shares": 18,
+          "investedAmount": 986400.0,
+          "weight": 0.03288,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "053580",
+          "companyName": "웹케시",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 7,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 58,
+            "returnOnCapital": 0.498914,
+            "earningsYield": 0.157796
+          },
+          "entryPrice": 6270.0,
+          "shares": 159,
+          "investedAmount": 996930.0,
+          "weight": 0.033231,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "018290",
+          "companyName": "브이티",
+          "industry": "화학",
+          "rankAtFreeze": 8,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 81,
+            "returnOnCapital": 0.510049,
+            "earningsYield": 0.118959
+          },
+          "entryPrice": 12230.0,
+          "shares": 81,
+          "investedAmount": 990630.0,
+          "weight": 0.033021,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "052400",
+          "companyName": "코나아이",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 9,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 82,
+            "returnOnCapital": 0.456588,
+            "earningsYield": 0.124518
+          },
+          "entryPrice": 44900.0,
+          "shares": 22,
+          "investedAmount": 987800.0,
+          "weight": 0.032927,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "215200",
+          "companyName": "메가스터디교육",
+          "industry": "일반서비스",
+          "rankAtFreeze": 10,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 104,
+            "returnOnCapital": 0.607006,
+            "earningsYield": 0.097608
+          },
+          "entryPrice": 39550.0,
+          "shares": 25,
+          "investedAmount": 988750.0,
+          "weight": 0.032958,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "136490",
+          "companyName": "선진",
+          "industry": "음식료·담배",
+          "rankAtFreeze": 11,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 105,
+            "returnOnCapital": 0.386191,
+            "earningsYield": 0.123685
+          },
+          "entryPrice": 9750.0,
+          "shares": 102,
+          "investedAmount": 994500.0,
+          "weight": 0.03315,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "030190",
+          "companyName": "NICE평가정보",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 12,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 106,
+            "returnOnCapital": 0.414177,
+            "earningsYield": 0.117856
+          },
+          "entryPrice": 13820.0,
+          "shares": 72,
+          "investedAmount": 995040.0,
+          "weight": 0.033168,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "036120",
+          "companyName": "서울평가정보",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 13,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 107,
+            "returnOnCapital": 0.31043,
+            "earningsYield": 0.16752
+          },
+          "entryPrice": 1615.0,
+          "shares": 619,
+          "investedAmount": 999685.0,
+          "weight": 0.033323,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "021240",
+          "companyName": "코웨이",
+          "industry": "일반서비스",
+          "rankAtFreeze": 14,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 109,
+            "returnOnCapital": 1.006458,
+            "earningsYield": 0.09185
+          },
+          "entryPrice": 89900.0,
+          "shares": 11,
+          "investedAmount": 988900.0,
+          "weight": 0.032963,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "019180",
+          "companyName": "티에이치엔",
+          "industry": "전기·전자",
+          "rankAtFreeze": 15,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 112,
+            "returnOnCapital": 0.308945,
+            "earningsYield": 0.162009
+          },
+          "entryPrice": 6010.0,
+          "shares": 166,
+          "investedAmount": 997660.0,
+          "weight": 0.033255,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "100840",
+          "companyName": "SNT에너지",
+          "industry": "기계·장비",
+          "rankAtFreeze": 16,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 119,
+            "returnOnCapital": 0.300213,
+            "earningsYield": 0.164383
+          },
+          "entryPrice": 26200.0,
+          "shares": 38,
+          "investedAmount": 995600.0,
+          "weight": 0.033187,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "484870",
+          "companyName": "엠앤씨솔루션",
+          "industry": "기계·장비",
+          "rankAtFreeze": 17,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 125,
+            "returnOnCapital": 0.462127,
+            "earningsYield": 0.09585
+          },
+          "entryPrice": 29300.0,
+          "shares": 34,
+          "investedAmount": 996200.0,
+          "weight": 0.033207,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "206650",
+          "companyName": "유바이오로직스",
+          "industry": "제약",
+          "rankAtFreeze": 18,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 129,
+            "returnOnCapital": 0.361352,
+            "earningsYield": 0.116385
+          },
+          "entryPrice": 8290.0,
+          "shares": 120,
+          "investedAmount": 994800.0,
+          "weight": 0.03316,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "037350",
+          "companyName": "성도이엔지",
+          "industry": "일반서비스",
+          "rankAtFreeze": 19,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 133,
+            "returnOnCapital": 0.524767,
+            "earningsYield": 0.091839
+          },
+          "entryPrice": 8600.0,
+          "shares": 116,
+          "investedAmount": 997600.0,
+          "weight": 0.033253,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "383220",
+          "companyName": "F&F",
+          "industry": "섬유·의류",
+          "rankAtFreeze": 20,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 135,
+            "returnOnCapital": 0.599916,
+            "earningsYield": 0.088432
+          },
+          "entryPrice": 77600.0,
+          "shares": 12,
+          "investedAmount": 931200.0,
+          "weight": 0.03104,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "192080",
+          "companyName": "더블유게임즈",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 21,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 139,
+            "returnOnCapital": 0.272354,
+            "earningsYield": 0.248511
+          },
+          "entryPrice": 61800.0,
+          "shares": 16,
+          "investedAmount": 988800.0,
+          "weight": 0.03296,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "339950",
+          "companyName": "아이비김영",
+          "industry": "일반서비스",
+          "rankAtFreeze": 22,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 142,
+            "returnOnCapital": 1.407841,
+            "earningsYield": 0.082685
+          },
+          "entryPrice": 2750.0,
+          "shares": 363,
+          "investedAmount": 998250.0,
+          "weight": 0.033275,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "353810",
+          "companyName": "이지바이오",
+          "industry": "음식료·담배",
+          "rankAtFreeze": 23,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 148,
+            "returnOnCapital": 0.39195,
+            "earningsYield": 0.09508
+          },
+          "entryPrice": 6230.0,
+          "shares": 160,
+          "investedAmount": 996800.0,
+          "weight": 0.033227,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "001060",
+          "companyName": "JW중외제약",
+          "industry": "제약",
+          "rankAtFreeze": 24,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 157,
+            "returnOnCapital": 0.62223,
+            "earningsYield": 0.08227
+          },
+          "entryPrice": 25000.0,
+          "shares": 40,
+          "investedAmount": 1000000.0,
+          "weight": 0.033333,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "066620",
+          "companyName": "국보디자인",
+          "industry": "건설",
+          "rankAtFreeze": 25,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 167,
+            "returnOnCapital": 0.254337,
+            "earningsYield": 0.181083
+          },
+          "entryPrice": 24450.0,
+          "shares": 40,
+          "investedAmount": 978000.0,
+          "weight": 0.0326,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "033500",
+          "companyName": "동성화인텍",
+          "industry": "화학",
+          "rankAtFreeze": 26,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 173,
+            "returnOnCapital": 0.28586,
+            "earningsYield": 0.109648
+          },
+          "entryPrice": 16670.0,
+          "shares": 59,
+          "investedAmount": 983530.0,
+          "weight": 0.032784,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "036620",
+          "companyName": "감성코퍼레이션",
+          "industry": "유통",
+          "rankAtFreeze": 27,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 174,
+            "returnOnCapital": 0.427552,
+            "earningsYield": 0.084987
+          },
+          "entryPrice": 4150.0,
+          "shares": 240,
+          "investedAmount": 996000.0,
+          "weight": 0.0332,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "092130",
+          "companyName": "이크레더블",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 28,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 174,
+            "returnOnCapital": 0.445975,
+            "earningsYield": 0.084293
+          },
+          "entryPrice": 14190.0,
+          "shares": 70,
+          "investedAmount": 993300.0,
+          "weight": 0.03311,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "114840",
+          "companyName": "아이패밀리에스씨",
+          "industry": "화학",
+          "rankAtFreeze": 29,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 177,
+            "returnOnCapital": 0.281371,
+            "earningsYield": 0.106992
+          },
+          "entryPrice": 8580.0,
+          "shares": 116,
+          "investedAmount": 995280.0,
+          "weight": 0.033176,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "284740",
+          "companyName": "쿠쿠홈시스",
+          "industry": "일반서비스",
+          "rankAtFreeze": 30,
+          "qualityStatus": "OFFICIAL_ANNUAL",
+          "sourceTrace": {
+            "combinedRank": 179,
+            "returnOnCapital": 0.370688,
+            "earningsYield": 0.089248
+          },
+          "entryPrice": 21400.0,
+          "shares": 46,
+          "investedAmount": 984400.0,
+          "weight": 0.032813,
+          "priceMissing": false
+        }
+      ]
+    },
+    "ttm": {
+      "strategyType": "TTM_EXPERIMENT",
+      "initialCapital": 30000000,
+      "cash": 249430.0,
+      "investedAmount": 29750570.0,
+      "holdings": [
+        {
+          "stockCode": "046940",
+          "companyName": "우원개발",
+          "industry": "건설",
+          "rankAtFreeze": 14,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 1.046413,
+            "experimentalEbitEv": 0.448652,
+            "ttmOperatingIncome": 67809813530.0
+          },
+          "entryPrice": 3630.0,
+          "shares": 275,
+          "investedAmount": 998250.0,
+          "weight": 0.033275,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "124500",
+          "companyName": "아이티센글로벌",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 29,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.811329,
+            "experimentalEbitEv": 0.265999,
+            "ttmOperatingIncome": 345255593598.0
+          },
+          "entryPrice": 21250.0,
+          "shares": 47,
+          "investedAmount": 998750.0,
+          "weight": 0.033292,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "088130",
+          "companyName": "동아엘텍",
+          "industry": "기계·장비",
+          "rankAtFreeze": 41,
+          "qualityStatus": "PASS_WITH_TRANSITION_NOTE",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.496805,
+            "experimentalEbitEv": 0.50059,
+            "ttmOperatingIncome": 120378635137.0
+          },
+          "entryPrice": 5210.0,
+          "shares": 191,
+          "investedAmount": 995110.0,
+          "weight": 0.03317,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "461300",
+          "companyName": "아이스크림미디어",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 45,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.511108,
+            "experimentalEbitEv": 0.343467,
+            "ttmOperatingIncome": 62859625057.0
+          },
+          "entryPrice": 15860.0,
+          "shares": 63,
+          "investedAmount": 999180.0,
+          "weight": 0.033306,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "184230",
+          "companyName": "SGA솔루션즈",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 79,
+          "qualityStatus": "PASS_WITH_TRANSITION_NOTE",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 1.339915,
+            "experimentalEbitEv": 0.161866,
+            "ttmOperatingIncome": 17872382061.0
+          },
+          "entryPrice": 1835.0,
+          "shares": 544,
+          "investedAmount": 998240.0,
+          "weight": 0.033275,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "284740",
+          "companyName": "쿠쿠홈시스",
+          "industry": "일반서비스",
+          "rankAtFreeze": 84,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.385096,
+            "experimentalEbitEv": 0.26323,
+            "ttmOperatingIncome": 168067192296.0
+          },
+          "entryPrice": 21400.0,
+          "shares": 46,
+          "investedAmount": 984400.0,
+          "weight": 0.032813,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "171090",
+          "companyName": "선익시스템",
+          "industry": "기계·장비",
+          "rankAtFreeze": 85,
+          "qualityStatus": "PASS_WITH_TRANSITION_NOTE",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.650743,
+            "experimentalEbitEv": 0.168078,
+            "ttmOperatingIncome": 114794969302.0
+          },
+          "entryPrice": 54800.0,
+          "shares": 18,
+          "investedAmount": 986400.0,
+          "weight": 0.03288,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "215200",
+          "companyName": "메가스터디교육",
+          "industry": "일반서비스",
+          "rankAtFreeze": 94,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.677253,
+            "experimentalEbitEv": 0.159152,
+            "ttmOperatingIncome": 120802568060.0
+          },
+          "entryPrice": 39550.0,
+          "shares": 25,
+          "investedAmount": 988750.0,
+          "weight": 0.032958,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "408920",
+          "companyName": "메쎄이상",
+          "industry": "일반서비스",
+          "rankAtFreeze": 111,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.344428,
+            "experimentalEbitEv": 0.222781,
+            "ttmOperatingIncome": 20665700407.0
+          },
+          "entryPrice": 3045.0,
+          "shares": 328,
+          "investedAmount": 998760.0,
+          "weight": 0.033292,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "136490",
+          "companyName": "선진",
+          "industry": "음식료·담배",
+          "rankAtFreeze": 114,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.355889,
+            "experimentalEbitEv": 0.209727,
+            "ttmOperatingIncome": 184393205171.0
+          },
+          "entryPrice": 9750.0,
+          "shares": 102,
+          "investedAmount": 994500.0,
+          "weight": 0.03315,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "383220",
+          "companyName": "F&F",
+          "industry": "섬유·의류",
+          "rankAtFreeze": 114,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.5454,
+            "experimentalEbitEv": 0.153176,
+            "ttmOperatingIncome": 498439762003.0
+          },
+          "entryPrice": 77600.0,
+          "shares": 12,
+          "investedAmount": 931200.0,
+          "weight": 0.03104,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "052420",
+          "companyName": "오성첨단소재",
+          "industry": "화학",
+          "rankAtFreeze": 120,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.297624,
+            "experimentalEbitEv": 0.255938,
+            "ttmOperatingIncome": 25089621455.0
+          },
+          "entryPrice": 8910.0,
+          "shares": 112,
+          "investedAmount": 997920.0,
+          "weight": 0.033264,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "263720",
+          "companyName": "디앤씨미디어",
+          "industry": "오락·문화",
+          "rankAtFreeze": 121,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.330673,
+            "experimentalEbitEv": 0.21219,
+            "ttmOperatingIncome": 19418869612.0
+          },
+          "entryPrice": 6780.0,
+          "shares": 147,
+          "investedAmount": 996660.0,
+          "weight": 0.033222,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "100220",
+          "companyName": "비상교육",
+          "industry": "오락·문화",
+          "rankAtFreeze": 122,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.367035,
+            "experimentalEbitEv": 0.188126,
+            "ttmOperatingIncome": 37551489074.0
+          },
+          "entryPrice": 5190.0,
+          "shares": 192,
+          "investedAmount": 996480.0,
+          "weight": 0.033216,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "019180",
+          "companyName": "티에이치엔",
+          "industry": "전기·전자",
+          "rankAtFreeze": 129,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.34015,
+            "experimentalEbitEv": 0.189092,
+            "ttmOperatingIncome": 84179559079.0
+          },
+          "entryPrice": 6010.0,
+          "shares": 166,
+          "investedAmount": 997660.0,
+          "weight": 0.033255,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "037350",
+          "companyName": "성도이엔지",
+          "industry": "일반서비스",
+          "rankAtFreeze": 131,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.521686,
+            "experimentalEbitEv": 0.147918,
+            "ttmOperatingIncome": 57480432507.0
+          },
+          "entryPrice": 8600.0,
+          "shares": 116,
+          "investedAmount": 997600.0,
+          "weight": 0.033253,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "018290",
+          "companyName": "브이티",
+          "industry": "화학",
+          "rankAtFreeze": 139,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.394854,
+            "experimentalEbitEv": 0.15949,
+            "ttmOperatingIncome": 71185384394.0
+          },
+          "entryPrice": 12230.0,
+          "shares": 81,
+          "investedAmount": 990630.0,
+          "weight": 0.033021,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "052400",
+          "companyName": "코나아이",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 143,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.505741,
+            "experimentalEbitEv": 0.14404,
+            "ttmOperatingIncome": 100996643471.0
+          },
+          "entryPrice": 44900.0,
+          "shares": 22,
+          "investedAmount": 987800.0,
+          "weight": 0.032927,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "054040",
+          "companyName": "한국컴퓨터",
+          "industry": "전기·전자",
+          "rankAtFreeze": 143,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.391564,
+            "experimentalEbitEv": 0.158901,
+            "ttmOperatingIncome": 26943178551.0
+          },
+          "entryPrice": 5050.0,
+          "shares": 198,
+          "investedAmount": 999900.0,
+          "weight": 0.03333,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "192080",
+          "companyName": "더블유게임즈",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 153,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.258878,
+            "experimentalEbitEv": 0.286277,
+            "ttmOperatingIncome": 245851318897.0
+          },
+          "entryPrice": 61800.0,
+          "shares": 16,
+          "investedAmount": 988800.0,
+          "weight": 0.03296,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "010280",
+          "companyName": "아이티센엔텍",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 153,
+          "qualityStatus": "PASS_WITH_TRANSITION_NOTE",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.436069,
+            "experimentalEbitEv": 0.145112,
+            "ttmOperatingIncome": 28445639848.0
+          },
+          "entryPrice": 4765.0,
+          "shares": 209,
+          "investedAmount": 995885.0,
+          "weight": 0.033196,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "100840",
+          "companyName": "SNT에너지",
+          "industry": "기계·장비",
+          "rankAtFreeze": 154,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.305551,
+            "experimentalEbitEv": 0.17714,
+            "ttmOperatingIncome": 121238540446.0
+          },
+          "entryPrice": 26200.0,
+          "shares": 38,
+          "investedAmount": 995600.0,
+          "weight": 0.033187,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "260970",
+          "companyName": "에스앤디",
+          "industry": "음식료·담배",
+          "rankAtFreeze": 154,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.300065,
+            "experimentalEbitEv": 0.181503,
+            "ttmOperatingIncome": 25758558979.0
+          },
+          "entryPrice": 50100.0,
+          "shares": 19,
+          "investedAmount": 951900.0,
+          "weight": 0.03173,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "484870",
+          "companyName": "엠앤씨솔루션",
+          "industry": "기계·장비",
+          "rankAtFreeze": 161,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.519452,
+            "experimentalEbitEv": 0.136508,
+            "ttmOperatingIncome": 54523842846.0
+          },
+          "entryPrice": 29300.0,
+          "shares": 34,
+          "investedAmount": 996200.0,
+          "weight": 0.033207,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "036120",
+          "companyName": "서울평가정보",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 172,
+          "qualityStatus": "PASS_WITH_TRANSITION_NOTE",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.320546,
+            "experimentalEbitEv": 0.156427,
+            "ttmOperatingIncome": 6783024039.0
+          },
+          "entryPrice": 1615.0,
+          "shares": 619,
+          "investedAmount": 999685.0,
+          "weight": 0.033323,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "080010",
+          "companyName": "이상네트웍스",
+          "industry": "유통",
+          "rankAtFreeze": 180,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.232015,
+            "experimentalEbitEv": 0.565646,
+            "ttmOperatingIncome": 24692454605.0
+          },
+          "entryPrice": 7280.0,
+          "shares": 137,
+          "investedAmount": 997360.0,
+          "weight": 0.033245,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "001060",
+          "companyName": "JW중외제약",
+          "industry": "제약",
+          "rankAtFreeze": 186,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.448457,
+            "experimentalEbitEv": 0.132303,
+            "ttmOperatingIncome": 106031157194.0
+          },
+          "entryPrice": 25000.0,
+          "shares": 40,
+          "investedAmount": 1000000.0,
+          "weight": 0.033333,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "214180",
+          "companyName": "헥토이노베이션",
+          "industry": "IT 서비스",
+          "rankAtFreeze": 187,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.28197,
+            "experimentalEbitEv": 0.159733,
+            "ttmOperatingIncome": 53012035639.0
+          },
+          "entryPrice": 14020.0,
+          "shares": 71,
+          "investedAmount": 995420.0,
+          "weight": 0.033181,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "099410",
+          "companyName": "동방선기",
+          "industry": "운송장비·부품",
+          "rankAtFreeze": 191,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.237203,
+            "experimentalEbitEv": 0.225728,
+            "ttmOperatingIncome": 10422456103.0
+          },
+          "entryPrice": 3160.0,
+          "shares": 316,
+          "investedAmount": 998560.0,
+          "weight": 0.033285,
+          "priceMissing": false
+        },
+        {
+          "stockCode": "259630",
+          "companyName": "엠플러스",
+          "industry": "기계·장비",
+          "rankAtFreeze": 192,
+          "qualityStatus": "PASS",
+          "sourceTrace": {
+            "experimentalReturnOnCapital": 0.269379,
+            "experimentalEbitEv": 0.173345,
+            "ttmOperatingIncome": 32375554589.0
+          },
+          "entryPrice": 10030.0,
+          "shares": 99,
+          "investedAmount": 992970.0,
+          "weight": 0.033099,
+          "priceMissing": false
+        }
+      ]
+    }
+  }
+}

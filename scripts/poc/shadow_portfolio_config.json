@@ -1,0 +1,19 @@
+{
+  "phase": "MF-TTM-SHADOW-PORTFOLIO-POC",
+  "purpose": "공식 연간 마법공식 top30(전략A)과 TTM 실험 마법공식 top30(전략B)을 동일 시점·조건으로 freeze하고, 실주문 없이 미래 성과·회전율·변동성을 조회 전용으로 비교. 운영 반영 없음.",
+  "portfolioSize": 30,
+  "weighting": "equal (종목당 가상 1,000,000원)",
+  "initialCapitalKrw": 30000000,
+  "perStockCapitalKrw": 1000000,
+  "fractionalShares": false,
+  "transactionCostAssumption": {
+    "roundTripPct": 0.4,
+    "note": "왕복 비용 가정(매수 수수료+매도 수수료+거래세 대략). 비교용 동일 적용. 공식값처럼 단정하지 않음. 실제 비용은 증권사·세율에 따라 다름."
+  },
+  "dividendPolicy": "초기 PoC는 배당을 별도 현금으로 누적(주가 미조정).",
+  "rebalancing": "없음. 최초 freeze 후 보유만 관찰(buy-and-hold).",
+  "benchmark": "KOSPI (단일. 새 복합 벤치마크 만들지 않음)",
+  "observationHorizon": "최소 6개월, 권장 12개월. 초기 몇 주 성과로 우열 결론 금지.",
+  "snapshotCadence": "매주 금요일 장 마감 후 종가 스냅샷(권장). 실패해도 운영 파이프라인 영향 0, read-only 가격조회, runtime write만.",
+  "disclaimer": "가상 포트폴리오 · 실주문 없음 · 투자 추천 아님 · 통계적 우월성 주장 아님 · TTM은 실험값(공식 순위 미반영)."
+}

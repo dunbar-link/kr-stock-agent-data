@@ -18,11 +18,68 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FREEZE = HERE / "fixtures" / "shadow-freeze-latest.json"
 SNAP_DIR = HERE.parents[1] / "_cache" / "ttm-poc-output" / "shadow-snapshots"   # runtime(gitignore)
+KOSPI_INDEX = "1001"
+
+
+def _now_kst_date():
+    return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y%m%d")
+
+
+def resolve_trading_date(requested_yyyymmdd: str):
+    """요청일부터 역순으로 실제 거래일(종가합>0) 판정. pykrx read-only. 미래·임의 날짜 금지."""
+    from pykrx import stock
+    import pandas as pd
+    base = datetime.strptime(requested_yyyymmdd, "%Y%m%d")
+    for back in range(0, 14):
+        cand = (base - timedelta(days=back)).strftime("%Y%m%d")
+        try:
+            df = stock.get_market_ohlcv_by_ticker(cand, market="KOSPI")
+            if df is None or df.empty:
+                continue
+            close = df["종가"] if "종가" in df.columns else df.iloc[:, 3]
+            if pd.to_numeric(close, errors="coerce").fillna(0).sum() > 0:
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def fetch_closes(trading_date_yyyymmdd: str) -> dict:
+    """거래일 전체 종목 종가(KOSPI+KOSDAQ). read-only."""
+    from pykrx import stock
+    prices = {}
+    for mkt in ("KOSPI", "KOSDAQ"):
+        try:
+            df = stock.get_market_ohlcv_by_ticker(trading_date_yyyymmdd, market=mkt)
+            if df is None or df.empty:
+                continue
+            col = "종가" if "종가" in df.columns else df.columns[3]
+            for tk, val in df[col].items():
+                try:
+                    prices[str(tk).zfill(6)] = float(val)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return prices
+
+
+def fetch_kospi_close(trading_date_yyyymmdd: str):
+    from pykrx import stock
+    try:
+        df = stock.get_index_ohlcv_by_date(trading_date_yyyymmdd, trading_date_yyyymmdd, KOSPI_INDEX)
+        if df is not None and not df.empty:
+            col = "종가" if "종가" in df.columns else df.columns[-2]
+            return float(df[col].iloc[0])
+    except Exception:
+        pass
+    return None
 
 
 # ---------- 순수 로직 ----------
@@ -138,30 +195,76 @@ def main(argv=None) -> int:
         return 0
 
     # 스냅샷 모드
-    mode = "real" if args.real else "offline"
-    if mode == "real":
-        print("[정보] --real 종가조회는 이번 Phase 미실행(승인/별도 Phase). --offline 로 캐시 계산만 검증하세요.")
-        return 0
-
-    # offline: 캐시 가격 없으면 계산 불가(임의 가격 금지) — 이번 Phase 는 계산 로직 검증까지
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
     state_path = SNAP_DIR / "snapshots.json"
     existing = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else []
-    price_map = {}  # offline + 캐시 없음 → 빈 맵(전 종목 missing 으로 안전 기록)
+    requested = (args.snapshot_date or _now_kst_date()).replace("-", "")
+
+    price_map, kospi_close, resolved = {}, None, None
+    if args.real:
+        # read-only 종가 조회(승인). 요청일→직전 거래일 판정. 미래·임의 날짜 금지.
+        resolved = resolve_trading_date(requested)
+        if not resolved:
+            print(json.dumps({"verdict": "WAIT", "reason": "거래일 판정 실패(휴장/조회 실패)"}, ensure_ascii=False))
+            return 3
+        price_map = fetch_closes(resolved)
+        kospi_close = fetch_kospi_close(resolved)
+    else:
+        resolved = requested  # offline: 계산 로직 검증(무캐시가격→전종목 missing)
+
+    resolved_iso = f"{resolved[:4]}-{resolved[4:6]}-{resolved[6:8]}"
+    freeze_date = freeze["sourceMetadata"]["freezeDate"]
     results = []
     for k in strat_keys:
-        if is_duplicate_snapshot(existing, args.snapshot_date, freeze["strategies"][k]["strategyType"]):
-            results.append({"strategy": k, "skipped": "이미 존재(멱등)"}); continue
-        snap = compute_snapshot(freeze["strategies"][k], price_map, args.snapshot_date)
-        if not args.dry_run:
+        stype = freeze["strategies"][k]["strategyType"]
+        if is_duplicate_snapshot(existing, resolved_iso, stype):
+            results.append({"strategy": k, "duplicate": True, "snapshotDate": resolved_iso}); continue
+        snap = compute_snapshot(freeze["strategies"][k], price_map, resolved_iso)
+        snap["requestedDate"] = f"{requested[:4]}-{requested[4:6]}-{requested[6:8]}"
+        snap["resolvedTradingDate"] = resolved_iso
+        snap["sameAsFreezeDate"] = (resolved_iso == freeze_date)
+        snap["kospiClose"] = kospi_close
+        if not args.dry_run and args.real:
             existing.append(snap)
-        results.append({"strategy": k, "missingPriceCount": snap["missingPriceCount"],
-                        "sourceStatus": snap["sourceStatus"]})
-    if not args.dry_run:
+        results.append({"strategy": k, "totalAsset": snap["totalAsset"],
+                        "cumulativeReturn": snap["cumulativeReturn"],
+                        "missingPriceCount": snap["missingPriceCount"],
+                        "sourceStatus": snap["sourceStatus"], "duplicate": False})
+    if not args.dry_run and args.real:
         state_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"mode": "offline", "snapshotDate": args.snapshot_date, "results": results,
-                      "note": "offline+무캐시가격 → 전 종목 missing 기록(임의 보정 없음). 실가격은 --real 승인 Phase."},
-                     ensure_ascii=False, indent=2))
+
+    verdict = "PASS"
+    total_missing = max((r.get("missingPriceCount", 0) for r in results if "missingPriceCount" in r), default=0)
+    if args.real and total_missing > 0:
+        verdict = "WARNING"
+    def _res(k):
+        return next((r for r in results if r.get("strategy") == k), {})
+    out = {"verdict": verdict, "mode": "real" if args.real else "offline",
+           "requestedDate": f"{requested[:4]}-{requested[4:6]}-{requested[6:8]}",
+           "resolvedTradingDate": resolved_iso, "sameAsFreezeDate": resolved_iso == freeze_date,
+           "kospiClose": kospi_close, "results": results, "realOrderCount": 0,
+           "statePath": str(state_path)}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+
+    # 상태 요약(runtime, 미stage). 민감정보 없음. duplicate 시 기존 스냅샷 값으로 채움.
+    if args.real and not args.dry_run:
+        def _saved(stype, field):
+            s = next((x for x in existing if x.get("resolvedTradingDate") == resolved_iso
+                      and x.get("strategyType") == stype), {})
+            return s.get(field)
+        status = {
+            "verdict": verdict, "executedAt": datetime.now(timezone(timedelta(hours=9))).isoformat(),
+            "requestedDate": out["requestedDate"], "resolvedTradingDate": resolved_iso,
+            "annualTotalAsset": _saved("OFFICIAL_ANNUAL", "totalAsset"), "annualReturn": _saved("OFFICIAL_ANNUAL", "cumulativeReturn"),
+            "ttmTotalAsset": _saved("TTM_EXPERIMENT", "totalAsset"), "ttmReturn": _saved("TTM_EXPERIMENT", "cumulativeReturn"),
+            "benchmarkKospiClose": kospi_close, "missingPriceCount": total_missing,
+            "duplicate": all(r.get("duplicate") for r in results) if results else False, "realOrderCount": 0,
+        }
+        (SNAP_DIR / "status-latest.json").write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # exit code: 0=성공/중복, 2=가격누락(WARNING), 3=거래일 실패(WAIT는 위에서 처리)
+    if args.real and total_missing > 0:
+        return 2
     return 0
 
 

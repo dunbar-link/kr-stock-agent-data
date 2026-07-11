@@ -236,7 +236,10 @@ py scripts/poc/shadow_portfolio.py --initialize # 계산기 dry-run(가격조회
 - **계산기(shadow_portfolio.py)**: `compute_snapshot`(시장가치+현금−비용→총자산·수익률, 가격누락 임의보정 금지) · `performance`(누적·주간·MDD·변동성, turnover=0 buy-and-hold) · `is_duplicate_snapshot`(멱등). 기본 dry-run, `--real` 가격조회는 별도 승인. 거래정지/corporate-action/상장폐지 플래그.
 - **config(shadow_portfolio_config.json)**: 왕복비용 가정 0.4%(단정 아님), benchmark=KOSPI 단일, 리밸런싱 없음, 관찰 최소 6개월·권장 12개월.
 - **UI**: REPO1 `app/internal/ttm-shadow`(nav 미노출) — 두 전략 요약카드·교집합·보유종목표·스냅샷이력(관찰 전). "가상 포트폴리오·실주문 없음·투자 추천 아님" 배지, 우열 결론 문구 없음.
-- **자동 관찰(설계만)**: 매주 금요일 장 마감 후 종가 스냅샷 권장. read-only·runtime write·멱등·휴장 처리. 운영 파이프라인 영향 0. **스케줄러 등록은 별도 승인.**
+- **첫 실가격 스냅샷(2026-07-10)**: `shadow_portfolio.py --real`로 pykrx 종가 조회. 요청일(토 07-11)→직전 거래일 07-10 자동 판정(sameAsFreezeDate=true). annual/ttm 총자산 3,000만·**누적수익 0**(freeze일 동일가격 검증), 가격누락 0, KOSPI 7475.94, 실주문 0. 재실행 시 duplicate(중복 0, 멱등).
+- **주간 자동화**: wrapper `shadow_weekly_snapshot.cmd`(python 절대경로, 단순 lock, exit 0/2/3/9) + Windows Task Scheduler `Wababa TTM Shadow Weekly Snapshot`(매주 금 18:10, Interactive/Limited=비번 불필요, MultipleInstances=IgnoreNew, ExecutionTimeLimit 30분). 수동 실행 LastTaskResult=0 검증. NextRunTime 2026-07-17 18:10.
+- **상태요약**(runtime `shadow-snapshots/status-latest.json`, 미stage): verdict·executedAt·resolvedTradingDate·annual/ttm TotalAsset·Return·KOSPI·missingPriceCount·duplicate·realOrderCount=0. 가격누락 임의보정 금지, 거래정지/상폐/기업행위 플래그.
+- 다음 관찰일 2026-07-17(금) 장 마감 후. 최소 6개월·권장 12개월. 초기 몇 주로 우열 결론 금지.
 
 ## 외부 검증 원천: 공식 IR 우선, 아이투자는 보조
 

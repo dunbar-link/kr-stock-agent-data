@@ -335,10 +335,54 @@ def next_action_line(o):
     return "Phase MF-MORNING-RECHECK: read-only 재관찰"
 
 
+def _standard_header(o):
+    """대장 표준 공통 헤더(메모장 첫 화면). 판정/실행상태/핵심요약 3줄/할 일/다음실행 + 파서호환 라인.
+
+    출력 표시 형식만 담당한다. canonical/공식순위/formulaVersion/주문 로직은 건드리지 않는다."""
+    v = o["verdict"]
+    exec_status = "WAIT" if v == "WAIT" else "SUCCESS"   # 스크립트 실행 성공/판정은 별도(known-warn 구분)
+    cs = o["closeoutState"]
+    if v == "BLOCKED":
+        action = "blocker 원인분리 확인 (아래 '다음 단일 작업')"
+    elif cs == "READY_TO_CLOSEOUT":
+        action = f"어제 seq={o['yesterdaySequence']} closeout 승인 필요 (아래 '다음 단일 작업')"
+    elif v == "WAIT":
+        action = "없음 (read-only 재관찰 대기)"
+    else:
+        action = "없음"
+    signal_yn = "생성됨" if o.get("yesterdaySignal") is not None else "없음"
+    next_run = "해당 없음"
+    for s in (o.get("scheduler") or []):
+        if s.get("name") == MORNING_TASK and s.get("nextRunTime"):
+            next_run = str(s.get("nextRunTime"))[:16].replace("T", " ") + " KST"
+            break
+    parser_v = "WARNING" if v == "WAIT" else v   # 파서 표준(PASS/WARNING/BLOCKED)엔 WAIT 없음 → 주의로 안전 매핑
+    exec_time = str(o["createdAt"])[:16].replace("T", " ")
+    core = [
+        f"어제 {o['yesterday']} closeout: {cs}",
+        f"오늘 예상 seq {o['todayExpectedSequence']} · 어제 신호 {signal_yn}",
+        "실주문 0 · read-only 관찰 (canonical/publish 미변경)",
+    ]
+    return [
+        "[프로젝트] 와바바",
+        "[제목] 와바바 마법공식 오전 통합보고",
+        f"[실행 시각] {exec_time} KST",
+        f"[전체 판정] {v}",
+        f"[실행 상태] {exec_status}",
+        "[핵심 요약]",
+        *[f"- {c}" for c in core],
+        f"[대장이 할 일] {action}",
+        f"[다음 자동 실행] {next_run}",
+        "",
+        f"전체 판정: {parser_v}",   # verdict 파서 호환(콜론 형식 유지)
+        "",
+    ]
+
+
 def to_markdown(o):
     dr, ev, lv, c = (o["yesterdayDryRun"] or {}), (o["evidence"] or {}), (o["live"] or {}), (o["canonical"] or {})
     r1 = ev.get("rank1") or {}
-    L = [f"전체 판정: {o['verdict']}", "",
+    L = _standard_header(o) + [
          f"# 와바바 마법공식 오전 통합 보고 — {o['today']} (어제 {o['yesterday']} 관찰)", "",
          "## 1. 요약",
          f"- 생성 시각: {o['createdAt']}",

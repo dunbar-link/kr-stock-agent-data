@@ -141,7 +141,10 @@ def t13_txt_already_applied_phrasing():
                "todayExpectedSequence": 14, "todayExpectedBatchId": "MF-BATCH-2026-07-10",
                "canonicalSequence": 13, "blocked": [], "actionWarns": [], "knownWarns": []})
     txt = M.to_txt(o)
-    assert txt.splitlines()[0] == "전체 판정: PASS", txt.splitlines()[0]
+    lines = txt.splitlines()
+    assert lines[0] == "[프로젝트] 와바바", lines[0]                 # 표준 공통 헤더 첫 줄
+    assert "[전체 판정] PASS" in txt, "표준 헤더 판정 누락"
+    assert "전체 판정: PASS" in txt, "verdict 파서 호환 라인 누락"     # Report Bridge 호환 유지
     assert "[자동화 채팅창에 붙일 요청]" in txt
     assert "closeout 지시문은 만들지 말고" in txt, "ALREADY_APPLIED 안내 문구 누락"
 

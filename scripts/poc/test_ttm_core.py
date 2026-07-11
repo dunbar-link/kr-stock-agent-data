@@ -269,6 +269,29 @@ def test_internal_consistency_fail():
     check("internal consistency: OP>GP FAIL", not r["consistent"], str(r))
 
 
+def test_internal_consistency_gp_tag_suspect_skips():
+    # 폴라리스오피스형: 매출이 ifrs-full_GrossProfit(nm=영업수익)에 태깅됨 → R==GP.
+    # R=COGS+GP 검사가 오탐(3242 != 2459+3242)이지만 GP 태그 오용이라 검사 스킵 → consistent True.
+    rows = [
+        is_row("ifrs-full_GrossProfit", "영업수익", amount=324_200_000_000, sj="CIS"),   # 실제 매출(=GP 태그 오용)
+        is_row("ifrs-full_CostOfSales", "매출원가", amount=245_900_000_000, sj="CIS"),
+        is_row("dart_OperatingIncomeLoss", "영업이익", amount=9_100_000_000, sj="CIS"),
+    ]
+    r = C.income_statement_consistency(rows)
+    check("gp_tag_suspect: R≈GP → 검사 스킵", r["grossProfitTagSuspect"] and r["consistent"] and r["checkedCount"] == 0, str(r))
+
+
+def test_internal_consistency_normal_gp_still_checked():
+    # 정상 기업(GP < 매출) 은 규칙 영향 없음: R=COGS+GP 위반이면 여전히 실패
+    rows = [
+        is_row("ifrs-full_Revenue", "매출액", amount=100_000_000_000, sj="IS"),
+        is_row("ifrs-full_CostOfSales", "매출원가", amount=70_000_000_000, sj="IS"),
+        is_row("ifrs-full_GrossProfit", "매출총이익", amount=20_000_000_000, sj="IS"),  # 100 != 70+20
+    ]
+    r = C.income_statement_consistency(rows)
+    check("normal GP<R: R=COGS+GP 검사 유지(위반 감지)", not r["grossProfitTagSuspect"] and not r["consistent"], str(r))
+
+
 _BIG = 2_160_000_000_000     # 2.16조 (>= 임계 2000억)
 _SMALL = 5_000_000_000       # 50억 (< 임계)
 _MED_SMALL = 30_000_000_000  # 300억 (< 임계)
@@ -413,6 +436,7 @@ def main():
         test_sanity_income_sign_no_false_positive, test_sanity_clean_passes,
         test_prior_year_quarter_extraction,
         test_internal_consistency_pass, test_internal_consistency_fail,
+        test_internal_consistency_gp_tag_suspect_skips, test_internal_consistency_normal_gp_still_checked,
         test_outlier_large_extreme_is_significant, test_outlier_small_turnaround_is_transition_only,
         test_outlier_small_yoy_is_minor_not_significant, test_outlier_threshold_is_config_driven,
         test_outlier_revenue_hard, test_match_official_ir_config_driven,

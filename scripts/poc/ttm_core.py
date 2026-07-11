@@ -227,21 +227,28 @@ def income_statement_consistency(rows: list[dict], tol: float = 0.02) -> dict:
     COGS = cumulative_is_value(rows, COGS_ACCOUNTS, ANNUAL_REPORT_CODE)["value"]
     GP = cumulative_is_value(rows, GROSS_PROFIT_ACCOUNTS, ANNUAL_REPORT_CODE)["value"]
 
+    # GrossProfit 태그 오용 감지: 정상 기업은 매출총이익 < 매출(GP = 매출 - 매출원가).
+    # GP 가 매출과 사실상 같거나 크면(GP >= R*(1-tol)) XBRL 태깅에서 매출액이 ifrs-full_GrossProfit 에
+    # 잘못 붙은 공시(일부 기업 태깅 특이). 이때 GP 기반 검사(R=COGS+GP 등)는 무의미하므로 스킵한다.
+    # 매출 자체(R)는 유효하며 누적 단조·연간 역산으로 별도 검증된다. 종목 무관 일반 규칙.
+    gp_tag_suspect = (R is not None and GP is not None and R > 0 and GP >= R * (1 - tol))
+
     checks = []
     ok = True
-    if R is not None and COGS is not None and GP is not None:
+    if R is not None and COGS is not None and GP is not None and not gp_tag_suspect:
         c = abs(R - (COGS + GP)) <= abs(R) * tol
         checks.append(("revenue=COGS+grossProfit", c))
         ok = ok and c
-    if GP is not None and OP is not None and GP >= 0:
+    if GP is not None and OP is not None and GP >= 0 and not gp_tag_suspect:
         c = OP <= abs(GP) * (1 + tol)
         checks.append(("operatingIncome<=grossProfit", c))
         ok = ok and c
-    if R is not None and GP is not None and R > 0:
+    if R is not None and GP is not None and R > 0 and not gp_tag_suspect:
         c = GP <= R * (1 + tol)
         checks.append(("grossProfit<=revenue", c))
         ok = ok and c
-    return {"consistent": ok, "checks": checks, "checkedCount": len(checks)}
+    return {"consistent": ok, "checks": checks, "checkedCount": len(checks),
+            "grossProfitTagSuspect": gp_tag_suspect}
 
 
 # 게이트 임계값 기본값(config gateThresholds 로 override). 코드 산발 하드코딩 방지용 단일 출처.

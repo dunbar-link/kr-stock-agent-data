@@ -72,6 +72,8 @@ PUBLIC_DATA_PATH = Path("C:/work/kr-stock-agent/public/data/recommendation-histo
 
 _PUBLIC_TOP_ALLOW = {
     "baseDate", "generatedAt",
+    # 시세 최신성 게이트(WABABA-PRICE-ASOF-STALE-GATE-20260720) — 공개본에서도 stale 사실을 숨기지 않는다.
+    "priceAsOf", "priceStaleTradingDays", "priceFreshnessStatus", "priceFreshnessReason", "priceSource",
     "finalBestPick", "wababaPicks", "exploreGroups",
     "aiFundTradeResult",
     "portfolio", "aiPortfolio",
@@ -822,6 +824,123 @@ def is_market_open_day(base_date, policy):
     if parsed.strftime("%Y-%m-%d") in holidays:
         return False
     return True
+
+
+# ── 시세 최신성 게이트 (WABABA-PRICE-ASOF-STALE-GATE-20260720) ─────────────────
+# 배경: get_base_date() 는 스냅샷 최상위 baseDate/date 만 보는데 실제 기준일은 meta.baseDate 라
+#       항상 datetime.now() 로 폴백된다 → KRX 장애로 시세가 며칠 묵어도 산출물이 "오늘자"로 찍혔다.
+# 방침: baseDate(실행 기준일 = 매매원장 키) 의미는 그대로 두고, 실제 시세 거래일을 priceAsOf 로
+#       additive 하게 전파 + 거래일 기준 stale 판정을 붙여 stale 을 PASS 로 위장하지 않는다.
+#       거래일 판정은 기존 is_market_open_day(주말·marketHolidays) 를 그대로 재사용한다.
+PRICE_STALE_WARN_MAX_TRADING_DAYS = 2      # 1~2 거래일 = WARNING_CACHED, 초과 = WAIT_EXTERNAL
+PRICE_TRADING_DAY_LOOKBACK_LIMIT = 30      # 최근 거래일 역탐색 상한(달력일)
+
+
+def get_price_as_of(market_snapshot):
+    """시세 스냅샷이 실제로 사용한 거래일(meta.baseDate 우선)을 반환. 판정 불가면 None."""
+    if not isinstance(market_snapshot, dict):
+        return None
+
+    candidates = []
+    meta = market_snapshot.get("meta")
+    if isinstance(meta, dict):
+        candidates.extend([meta.get("baseDate"), meta.get("date")])
+    candidates.extend([market_snapshot.get("baseDate"), market_snapshot.get("date")])
+
+    for value in candidates:
+        text = str(value or "").strip()[:10]
+        if text:
+            return text
+    return None
+
+
+def get_price_source(market_snapshot):
+    """시세 원천(meta.provider). 알 수 없으면 'unknown'."""
+    if isinstance(market_snapshot, dict):
+        meta = market_snapshot.get("meta")
+        if isinstance(meta, dict):
+            provider = str(meta.get("provider") or "").strip()
+            if provider:
+                return provider
+    return "unknown"
+
+
+def latest_trading_day_on_or_before(target_date, policy):
+    """target_date 이하의 가장 최근 거래일. 주말·공휴일이면 직전 거래일로 내려간다."""
+    if target_date is None:
+        return None
+
+    cursor = target_date
+    for _ in range(PRICE_TRADING_DAY_LOOKBACK_LIMIT):
+        if is_market_open_day(cursor.strftime("%Y-%m-%d"), policy):
+            return cursor
+        cursor = cursor - timedelta(days=1)
+    return None
+
+
+def count_trading_days_between(start_date, end_date, policy):
+    """start_date(제외) ~ end_date(포함) 사이의 거래일 수. start > end 면 None."""
+    if start_date is None or end_date is None or start_date > end_date:
+        return None
+
+    count = 0
+    cursor = start_date + timedelta(days=1)
+    while cursor <= end_date:
+        if is_market_open_day(cursor.strftime("%Y-%m-%d"), policy):
+            count += 1
+        cursor = cursor + timedelta(days=1)
+    return count
+
+
+def evaluate_price_freshness(price_as_of, reference_date, policy):
+    """시세 기준일 최신성 판정(달력일이 아니라 거래일 기준).
+
+    PASS            : 기준 시점의 최근 거래일 시세(주말·공휴일이면 직전 거래일이 최신)
+    WARNING_CACHED  : 1~2 거래일 지난 캐시 시세
+    WAIT_EXTERNAL   : 2 거래일 초과 — 외부(KRX) 수집 복구 대기
+    BLOCKED_NO_DATA : 시세 기준일 없음·손상·미래일 등 판정 불가
+    """
+    def result(status, stale, reason, as_of=None):
+        return {
+            "priceAsOf": as_of,
+            "priceStaleTradingDays": stale,
+            "priceFreshnessStatus": status,
+            "priceFreshnessReason": reason,
+        }
+
+    parsed = parse_date_value(price_as_of)
+    if parsed is None:
+        return result("BLOCKED_NO_DATA", None, "시세 기준일 없음 또는 손상(파싱 불가)")
+
+    as_of_text = parsed.strftime("%Y-%m-%d")
+
+    if reference_date is None:
+        return result("BLOCKED_NO_DATA", None, "실행 기준일 판정 불가", as_of_text)
+
+    if parsed > reference_date:
+        return result(
+            "BLOCKED_NO_DATA", None,
+            f"시세 기준일이 미래({as_of_text} > {reference_date.strftime('%Y-%m-%d')}) — 신뢰 불가",
+            as_of_text,
+        )
+
+    latest = latest_trading_day_on_or_before(reference_date, policy)
+    if latest is None:
+        return result("BLOCKED_NO_DATA", None, "최근 거래일 산출 실패(휴장 판정 불가)", as_of_text)
+
+    stale = count_trading_days_between(parsed, latest, policy)
+    if stale is None:
+        stale = 0
+
+    if stale <= 0:
+        return result("PASS", 0, f"최근 거래일({latest.strftime('%Y-%m-%d')}) 시세", as_of_text)
+    if stale <= PRICE_STALE_WARN_MAX_TRADING_DAYS:
+        return result("WARNING_CACHED", stale, f"{stale}거래일 지난 캐시 시세 사용", as_of_text)
+    return result(
+        "WAIT_EXTERNAL", stale,
+        f"{stale}거래일 지난 시세 — 외부(KRX) 수집 복구 대기, 신규 판단 신뢰 불가",
+        as_of_text,
+    )
 
 
 def get_existing_trade_ids(portfolio):
@@ -6620,11 +6739,32 @@ def main():
     if final_best_pick:
         final_best_pick = attach_portfolio_decision(final_best_pick, portfolio_map)
 
+    # 시세 최신성 게이트: baseDate(실행 기준일)와 별개로 '실제 사용한 시세 거래일'을 명시한다.
+    price_freshness = evaluate_price_freshness(
+        get_price_as_of(market_snapshot),
+        datetime.now().date(),
+        fund_policy,
+    )
+    print(
+        "priceAsOf: {0} / stale {1}거래일 / {2} ({3})".format(
+            price_freshness["priceAsOf"],
+            price_freshness["priceStaleTradingDays"],
+            price_freshness["priceFreshnessStatus"],
+            price_freshness["priceFreshnessReason"],
+        )
+    )
+
     result = {
         "agentName": "와바바",
         "agentFullName": "와바바 (Why Buy & Bye?)",
         "baseDate": base_date,
         "generatedAt": now_text(),
+        # 시세 최신성(additive, optional) — 기존 consumer 는 무시해도 동작한다.
+        "priceAsOf": price_freshness["priceAsOf"],
+        "priceStaleTradingDays": price_freshness["priceStaleTradingDays"],
+        "priceFreshnessStatus": price_freshness["priceFreshnessStatus"],
+        "priceFreshnessReason": price_freshness["priceFreshnessReason"],
+        "priceSource": get_price_source(market_snapshot),
         "filterConfig": config,
         "fundPolicy": fund_policy,
         "fundTradeResult": fund_trade_result,

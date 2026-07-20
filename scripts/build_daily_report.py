@@ -143,9 +143,24 @@ def build_report(history):
     hold_candidates = sort_hold_items(history.get("holdCandidates") or [])
     sell_candidates = sort_sell_items(history.get("sellCandidates") or [])
 
+    # 시세 최신성(WABABA-PRICE-ASOF-STALE-GATE-20260720) — recommendation-history 에서 그대로 전달.
+    # 없으면(과거 fixture) 표시를 생략해 기존 호환을 유지한다.
+    price_as_of = history.get("priceAsOf")
+    price_status = history.get("priceFreshnessStatus")
+    price_stale_days = history.get("priceStaleTradingDays")
+    price_reason = history.get("priceFreshnessReason")
+
     lines = []
 
     lines.append(f"[{base_date} 투자 판단]")
+    if price_as_of or price_status:
+        lines.append(
+            "시세 기준일: {0} / {1}{2}".format(
+                price_as_of or "판정 불가",
+                price_status or "UNKNOWN",
+                "" if price_status == "PASS" else f" — {price_reason or '최신성 확인 필요'}",
+            )
+        )
     lines.append("")
     lines.append(build_section("BUY 후보", buy_candidates, show_reason=True))
     lines.append("")
@@ -160,6 +175,11 @@ def build_report(history):
     report_json = {
         "baseDate": base_date,
         "generatedAt": now_text(),
+        # 시세 최신성(additive) — 값이 없으면 None 으로 남겨 기존 consumer 호환.
+        "priceAsOf": price_as_of,
+        "priceStaleTradingDays": price_stale_days,
+        "priceFreshnessStatus": price_status,
+        "priceFreshnessReason": price_reason,
         "buyCandidates": buy_candidates,
         "holdCandidates": hold_candidates,
         "sellCandidates": sell_candidates,

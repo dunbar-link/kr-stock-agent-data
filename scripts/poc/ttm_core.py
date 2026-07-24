@@ -38,6 +38,13 @@ IS_ACCOUNTS = {
         "영업이익",
         "영업이익(손실)",
     ],
+    # 주의(MF-ITOOZA-LOGIN-READONLY-7STOCK-VERIFY, 2026-07-24): 여기의 "netIncome"은
+    # 총계(지배주주+비지배주주) 당기순이익(ifrs-full_ProfitLoss)이다. 아이투자 등 공개 재무
+    # 사이트가 표시하는 "순이익(지배)"는 별도 계정(ifrs-full_ProfitLossAttributableToOwnersOfParent,
+    # 지배주주순이익)으로, 비지배지분이 큰 종목(예: 자회사를 별도 상장한 대기업)에서는 두 값이
+    # 크게 다르거나 부호까지 달라질 수 있다(둘 다 정상적인 DART 원자료, 오류 아님). 외부(아이투자/
+    # 언론) "순이익" 표시값과 1:1 대조 시 이 정의 차이를 감안할 것 — 아이투자 값으로 이 필드를
+    # 덮어쓰거나 재계산하지 않는다.
     "netIncome": ["ifrs-full_ProfitLoss", "당기순이익", "당기순이익(손실)", "연결당기순이익"],
 }
 BS_ACCOUNTS = {

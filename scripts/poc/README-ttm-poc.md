@@ -249,6 +249,16 @@ py scripts/poc/shadow_portfolio.py --initialize # 계산기 dry-run(가격조회
 - 사용 시 원칙: 대장 전용 프로필 1회 직접 로그인 / 비밀번호·쿠키·토큰 미저장 / 저속 read-only / 값 덮어쓰기 금지 / CAPTCHA 우회 금지 / 접근제한 확인 시 중단.
 - 산출물: `_cache/ttm-poc-output/itooza-crosscheck-7-latest.{json,csv}`(공식 IR 재분류 결과, `itooza=null`), `itooza-compare-fixture.{json,csv}`(비교용).
 
+### 아이투자 대조 결과 (2026-07-24, 잔여 5종 — MF-ITOOZA-LOGIN-READONLY-7STOCK-VERIFY)
+전용 Chrome 프로필(대장 1회 로그인, read-only)로 삼성SDI(006400)·와이솔(122990)·LG화학(051910)·롯데쇼핑(023530)·두산테스나(131970) 5종의 아이투자 `재무정보` 분기(2026.03) 테이블을 DART 값과 대조.
+
+- **매출액·영업이익**: 5종 전부 아이투자 값과 DART(TTM PoC) 값이 억원 단위 반올림 오차(<2%) 내 일치. 흑↔적 전환·YoY 급변 신호 전부 실체 확인(데이터 오류 아님).
+- **순이익**: 아이투자가 표시하는 "순이익(지배)"는 지배주주순이익(`ifrs-full_ProfitLossAttributableToOwnersOfParent`)이고, 이 PoC의 `netIncome`은 총계(`ifrs-full_ProfitLoss`, 지배+비지배)다 — **계정 정의가 다르다**(코드 결함 아님, `ttm_core.py` `IS_ACCOUNTS` 주석 참조).
+  - CFS(연결) 4종(006400·122990·051910·023530): 두 정의가 규모(최대 −55%~+55%) 또는 부호까지 다를 수 있음(비지배지분이 큰 자회사 보유 시). 방향(흑자전환/적자전환/YoY 방향)은 4종 전부 DART·아이투자 동일 결론.
+  - OFS(별도) 1종(131970 두산테스나): 별도재무제표는 비지배지분 개념이 없어 두 정의가 사실상 동일(오차 0.57%) — CFS/OFS 정의 차이가 그대로 재현되어 가설을 뒷받침.
+- **판정**: PASS 2(122990·131970, 오차가 반올림/근접 범위) / WARNING 3(006400·051910·023530, 순이익 정의차이 명확하나 공식 산식 영향 없음). BLOCKED 0. 상세는 `reports/magic-itooza-7stock-verify-latest.md` 참조.
+- **수정 범위**: `ttm_core.py`의 `netIncome` 계정 주석만 보강(어떤 DART 계정을 쓰는지, 아이투자 표시값과 왜 다를 수 있는지 명시). 수치 로직·계정 후보·게이트 임계값 변경 없음 → 회귀 불필요(comment-only diff로 확인, 단위테스트 61 PASS 재확인).
+
 ## 안전(이번 PoC 준수)
 
 실주문/broker API/canonical apply/public·rankings publish/recommendation-history write/운영 장부 write/공식 산식·formulaVersion 변경/전 종목 수집/스케줄러 등록/아이투자 로그인·크롤링/Vercel 배포/push/force push/`git add .`/`financial-universe-real.json` 수정/기존 연간 캐시 덮어쓰기/DART 대량·고속 호출 — **전부 미실행.**

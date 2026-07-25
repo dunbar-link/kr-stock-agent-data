@@ -593,6 +593,42 @@ def _rederive_dry_run(signal_date: str | None):
     return p.returncode == 0, f"dry-run rc={p.returncode}"
 
 
+# ── 내구성 상태 산출물(08:40 Founder 종합보고 수집원) ──────────────────────────
+# TEMP 는 휘발성이라 종합보고가 읽을 수 없다. REPO2 reports/ 에 latest 를 남긴다
+# (해당 폴더는 .gitignore 대상이라 stage 되지 않는다).
+DURABLE_STATUS_JSON = C.ROOT / "reports" / "magic-auto-apply-status-latest.json"
+DURABLE_STATUS_MD = C.ROOT / "reports" / "magic-auto-apply-status-latest.md"
+
+
+def write_durable_status(result: dict, *, json_path: Path | None = None,
+                         md_path: Path | None = None) -> None:
+    """08:40 종합보고가 읽을 최신 상태를 REPO2 reports/ 에 기록한다(외부 발송 0)."""
+    jp = Path(json_path or DURABLE_STATUS_JSON)
+    mp = Path(md_path or DURABLE_STATUS_MD)
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    jp.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+    v = result.get("verdict", "UNKNOWN")
+    L = [f"전체 판정: {v}", "",
+         "# 와바바 마법공식 — 가상 장부 무인 자동반영 상태", "",
+         f"- 기준일: {result.get('date')}",
+         f"- 상태: {result.get('status')}",
+         f"- 대상 거래일: {result.get('targetExecutionDate') or '없음'}",
+         f"- 장부 변경: {'있음' if result.get('canonicalChanged') else '없음'}"]
+    if result.get("officialSequence") is not None:
+        L.append(f"- seq / TDI: {result.get('officialSequence')} / {result.get('officialTradingDayIndex')}")
+        L.append(f"- 가상 현금: {result.get('officialAvailableCash')}")
+        L.append(f"- 총 lot: {result.get('itemLots')}")
+    if result.get("blockedCodes"):
+        L.append(f"- 차단 사유: {', '.join(result['blockedCodes'])}")
+    L += [f"- 미반영 잔여: {len(result.get('remainingPendingDates') or [])}건",
+          f"- 실주문 {result.get('realOrderCount', 0)} · 브로커 {result.get('brokerApiCallCount', 0)} · "
+          f"SMTP {result.get('smtpCallCount', 0)} · public {result.get('publicCopyCount', 0)}",
+          f"- 사유: {result.get('reason', '')}",
+          f"- 생성: {result.get('createdAt')}"]
+    mp.write_text("\n".join(L) + "\n", encoding="utf-8")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="마법공식 가상 장부 무인 자동 반영(1회 실행 = 최대 1거래일, 실주문 없음)")
@@ -603,6 +639,8 @@ def main(argv=None) -> int:
 
     r = run_auto_apply(today_iso=args.date, do_apply=not args.dry_run)
     C.write_json_report(C.REPORTS_DIR / f"auto-apply-{args.date or C.today_kst_iso()}.json", r)
+    if not args.dry_run:
+        write_durable_status(r)
     if args.json:
         print(json.dumps(r, ensure_ascii=False, indent=2))
     else:

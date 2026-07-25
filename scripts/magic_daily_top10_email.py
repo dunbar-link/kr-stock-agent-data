@@ -179,7 +179,17 @@ def mark_sent(date_iso: str, *, state_path: Path = DELIVERY_STATE_PATH, now: str
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def run_top10_email(date_iso: str, *, state_path: Path = DELIVERY_STATE_PATH, now: str | None = None) -> dict:
+def preview_text_path(date_iso: str) -> Path:
+    return C.REPORTS_DIR / f"top10-email-preview-{date_iso}.txt"
+
+
+def render_preview_file(email: dict) -> str:
+    """미리보기 파일(.txt) 내용. 같은 입력이면 항상 같은 문자열(멱등성 판정 기준)."""
+    return f"Subject: {email['subject']}\n\n{email['body']}\n"
+
+
+def run_top10_email(date_iso: str, *, state_path: Path = DELIVERY_STATE_PATH,
+                    preview_path: Path | None = None, now: str | None = None) -> dict:
     phase = "TOP10_EMAIL_PREVIEW"
     now = now or C.now_kst().isoformat()
 
@@ -229,6 +239,17 @@ def run_top10_email(date_iso: str, *, state_path: Path = DELIVERY_STATE_PATH, no
 
     email = render_email(date_iso, ranking, diff)
 
+    # 6) 동일 거래일 재실행 멱등성: 이미 같은 내용의 미리보기가 있으면 duplicate 로 표시한다.
+    #    (파일은 덮어써도 내용이 동일하므로 중복 산출물이 쌓이지 않는다 — 스케줄러 재실행 안전)
+    ppath = preview_path or preview_text_path(date_iso)
+    expected = render_preview_file(email)
+    duplicate = False
+    if ppath.exists():
+        try:
+            duplicate = ppath.read_text(encoding="utf-8") == expected
+        except OSError:
+            duplicate = False
+
     return {
         "status": DRY_RUN_EMAIL_READY, "phase": phase, "date": date_iso,
         "signalAsOfDate": signal_as_of, "universeBaseDate": universe_base,
@@ -237,6 +258,7 @@ def run_top10_email(date_iso: str, *, state_path: Path = DELIVERY_STATE_PATH, no
         "newEntryCount": sum(1 for r in diff["rows"] if r["isNew"]),
         "removedCount": len(diff["removed"]),
         "emailSubject": email["subject"], "emailBody": email["body"],
+        "previewPath": str(ppath), "duplicate": duplicate,
         "recipientEnvVar": RECIPIENT_ENV_VAR, "recipientConfigured": False,
         "autoStopped": False, "noFakeTrade": True, "realOrderCount": 0, "brokerApiCallCount": 0,
         "emailSent": False, "smtpCallCount": 0,
@@ -254,14 +276,17 @@ def main(argv=None) -> int:
     r = run_top10_email(date_iso)
     C.write_json_report(C.REPORTS_DIR / f"top10-email-preview-{date_iso}.json", r)
     if r.get("status") == DRY_RUN_EMAIL_READY:
-        preview_path = C.REPORTS_DIR / f"top10-email-preview-{date_iso}.txt"
-        preview_path.write_text(
-            f"Subject: {r['emailSubject']}\n\n{r['emailBody']}\n", encoding="utf-8")
+        ppath = Path(r["previewPath"])
+        ppath.parent.mkdir(parents=True, exist_ok=True)
+        ppath.write_text(
+            render_preview_file({"subject": r["emailSubject"], "body": r["emailBody"]}),
+            encoding="utf-8")
 
     if args.json:
         print(json.dumps(r, ensure_ascii=False, indent=2))
     else:
         print(f"[TOP10_EMAIL {date_iso}] status={r['status']} "
+              f"duplicate={r.get('duplicate')} "
               f"reason={r.get('reason', '')} emailSent={r.get('emailSent')}")
     return 0 if r["status"] in (DRY_RUN_EMAIL_READY, "SELF_SKIPPED_NON_TRADING_DAY", ALREADY_SENT) else 2
 

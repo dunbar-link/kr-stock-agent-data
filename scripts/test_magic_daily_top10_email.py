@@ -125,7 +125,8 @@ try:
         prev_dir.mkdir(parents=True, exist_ok=True)
         (prev_dir / "rankings.json").write_text(json.dumps(prev_ranking, ensure_ascii=False), encoding="utf-8")
 
-        r = E.run_top10_email("2026-07-24", state_path=state_path)
+        preview_path = C.TEMP_ROOT / "reports" / "top10-email-preview-2026-07-24.txt"
+        r = E.run_top10_email("2026-07-24", state_path=state_path, preview_path=preview_path)
         check("정상 -> DRY_RUN_EMAIL_READY", r["status"], E.DRY_RUN_EMAIL_READY)
         check("emailSent 항상 False(이 Phase는 미발송)", r["emailSent"], False)
         check("smtpCallCount=0", r["smtpCallCount"], 0)
@@ -135,6 +136,18 @@ try:
         check("newEntryCount=1(484870)", r["newEntryCount"], 1)
         check("removedCount=1(999999)", r["removedCount"], 1)
         check("recipientConfigured=False(값 미참조)", r["recipientConfigured"], False)
+        check("최초 실행은 duplicate=False", r["duplicate"], False)
+
+        # 5-3b) 동일 거래일 재실행 멱등성 — 미리보기 파일을 실제로 쓴 뒤 재실행하면 duplicate=True
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_text(
+            E.render_preview_file({"subject": r["emailSubject"], "body": r["emailBody"]}),
+            encoding="utf-8")
+        r2 = E.run_top10_email("2026-07-24", state_path=state_path, preview_path=preview_path)
+        check("재실행 -> duplicate=True", r2["duplicate"], True)
+        check("재실행도 status 동일(DRY_RUN_EMAIL_READY)", r2["status"], E.DRY_RUN_EMAIL_READY)
+        check("재실행 본문 동일(결정론)", r2["emailBody"], r["emailBody"])
+        check("재실행도 emailSent=False", r2["emailSent"], False)
 
         # 5-4) 이미 발송된 날짜 -> ALREADY_SENT(중복 방지)
         E.mark_sent("2026-07-24", state_path=state_path)

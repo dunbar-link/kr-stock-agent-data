@@ -72,7 +72,8 @@ def _result(decision: str, *, verdict: str, reason: str, today: str,
 
 
 def evaluate(*, today_iso: str, canonical: dict | None, apply_status: dict | None,
-             lock_held: bool, public_model_error: str | None) -> dict:
+             lock_held: bool, public_model_error: str | None,
+             quality_status: dict | None = None) -> dict:
     """순수 판정(파일 접근 없음 — 호출자가 읽어서 넘긴다). 테스트에서 그대로 재사용."""
     checks: dict = {}
 
@@ -157,6 +158,16 @@ def evaluate(*, today_iso: str, canonical: dict | None, apply_status: dict | Non
                        reason=f"public 변환 gate 실패: {public_model_error}", checks=checks,
                        founderAction="canonical 무결성 원인 확인")
 
+    # KRX 수집 품질 gate — 그 거래일 데이터가 INVALID 면 홈페이지 반영도 막는다(계약 A).
+    #   quality_status 는 호출자가 읽어서 넘긴다(순수 판정 유지). 증거 없으면 PASS 로 보지 않는다.
+    import krx_data_quality as Q
+    q_ok, q_code, q_detail = Q.evaluate(quality_status, today_iso)
+    checks["krxDataQualityPass"] = q_ok
+    if not q_ok:
+        return _result(f"BLOCKED_{q_code}", verdict="BLOCKED", today=today_iso,
+                       reason=f"KRX 데이터 품질 미통과: {q_detail}", checks=checks,
+                       founderAction="해당 거래일 KRX 수집 재검증 후 재실행")
+
     return _result(PROCEED, verdict="PASS", today=today_iso,
                    reason=f"당일({today_iso}) Auto Apply 선행 완료 확인 — public publish 진행",
                    checks=checks, publishTargetDate=today_iso,
@@ -192,8 +203,13 @@ def run(*, today_iso: str | None = None, canonical_path: Path = CANONICAL_PATH,
         except Exception as e:  # noqa: BLE001
             public_model_error = f"{type(e).__name__}: {e}"
 
+    # 그 거래일 KRX 수집 품질 증거(없으면 None → gate 가 fail-closed 판정)
+    import krx_data_quality as Q
+    quality_status = Q.read_status(today_iso)
+
     return evaluate(today_iso=today_iso, canonical=canonical, apply_status=apply_status,
-                    lock_held=Path(lock_path).exists(), public_model_error=public_model_error)
+                    lock_held=Path(lock_path).exists(), public_model_error=public_model_error,
+                    quality_status=quality_status)
 
 
 def main(argv=None) -> int:

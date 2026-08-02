@@ -31,6 +31,9 @@ DART_MAX_TICKERS = int(os.environ.get("DART_MAX_TICKERS", "0") or "0")
 DART_LOOKBACK_YEARS = 4
 ANNUAL_REPORT_CODE = "11011"
 
+# universe 종목 수 급감 감지 하한(정상 KOSPI+KOSDAQ ≈ 2,700+). 부분 산출물 공개 금지용.
+MIN_UNIVERSE_COUNT = int(os.environ.get("WABABA_MIN_UNIVERSE_COUNT", "2000") or "2000")
+
 
 def ensure_cache_dirs():
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -134,104 +137,129 @@ def normalize_market_cap_to_billion_krw(value):
     return round(numeric / 100_000_000, 2)
 
 
-def safe_get_ohlcv(base_date: str, market: str) -> pd.DataFrame:
-    try:
-        frame = stock.get_market_ohlcv_by_ticker(base_date, market=market).reset_index()
-        if frame is None or frame.empty:
-            return pd.DataFrame(columns=["symbol", "price"])
+# ── KRX 수집 fail-closed (WABABA-KRX-FUNDAMENTAL-RECOVERY-R1) ────────────────
+#  이전 구현은 어떤 예외든 삼키고 *빈 DataFrame* 을 돌려줘, 일시적 upstream 장애가
+#  조용한 데이터 결측으로 바뀌어 ranking·signal·apply 까지 그대로 흘렀다.
+#  이제 krx_fetch_guard 로 응답을 검증하고(구조만; 개별 종목의 정상 결측은 허용)
+#  일시적 장애만 제한 재시도(최초 1 + 재시도 2 = 총 3회)한 뒤, 끝내 실패하면 예외를 올린다.
+#  과거 값·0·전일 데이터로 위장하지 않는다.
+_FETCH_EVIDENCE: list[dict] = []
 
-        return frame.rename(
-            columns={
-                "티커": "symbol",
-                "종가": "price",
-            }
-        )[["symbol", "price"]]
-    except Exception as error:
-        print(f"[WARN] OHLCV 조회 실패 ({market}): {error}")
-        return pd.DataFrame(columns=["symbol", "price"])
+
+def _run_guarded(fetcher, spec):
+    """검증 통과 프레임 반환. 실패 시 KrxDataInvalid 전파(빈 프레임 반환 금지)."""
+    from krx_fetch_guard import fetch_validated
+    try:
+        result = fetch_validated(fetcher, spec)
+    except Exception as err:  # KrxDataInvalid 포함 — 증거만 남기고 그대로 올린다
+        ev = getattr(err, "evidence", None) or {}
+        ev.setdefault("kind", spec.kind)
+        ev.setdefault("market", spec.market)
+        ev["verdict"] = "INVALID"
+        ev["code"] = getattr(err, "code", "UNKNOWN")
+        _FETCH_EVIDENCE.append(ev)
+        raise
+    _FETCH_EVIDENCE.append({**result.evidence, "verdict": "PASS"})
+    return result.frame
+
+
+def fetch_evidence() -> list[dict]:
+    """이번 실행에서 수집된 redacted 진단 증거(원문·인증정보 없음)."""
+    return list(_FETCH_EVIDENCE)
+
+
+def reset_fetch_evidence() -> None:
+    _FETCH_EVIDENCE.clear()
+
+
+def safe_get_ohlcv(base_date: str, market: str) -> pd.DataFrame:
+    """종가 — 공식 마법공식 체결가·평가에 필수. 실패 시 fail-closed."""
+    from krx_fetch_guard import FetchSpec
+    spec = FetchSpec(kind="ohlcv", market=market, required_columns=("티커", "종가"),
+                     min_rows=50, numeric_columns=("종가",), collapse_guard_columns=("종가",),
+                     required=True)
+    frame = _run_guarded(
+        lambda: stock.get_market_ohlcv_by_ticker(base_date, market=market).reset_index(), spec)
+    return frame.rename(columns={"티커": "symbol", "종가": "price"})[["symbol", "price"]]
 
 
 def safe_get_fundamental(base_date: str, market: str) -> pd.DataFrame:
-    try:
-        frame = stock.get_market_fundamental_by_ticker(base_date, market=market).reset_index()
-        if frame is None or frame.empty:
-            return pd.DataFrame(columns=["symbol", "PER", "PBR", "DIV"])
+    """PER/PBR/DIV — 구조는 필수(응답 자체가 유효해야 함). 개별 종목 결측은 정상(적자기업 PER 등).
 
-        return frame.rename(
-            columns={
-                "티커": "symbol",
-                "PER": "PER",
-                "PBR": "PBR",
-                "DIV": "DIV",
-            }
-        )[["symbol", "PER", "PBR", "DIV"]]
-    except Exception as error:
-        print(f"[WARN] 펀더멘털 조회 실패 ({market}): {error}")
-        return pd.DataFrame(columns=["symbol", "PER", "PBR", "DIV"])
+    공식 마법공식(EBIT/EV·EBIT/투입자본)은 이 값을 쓰지 않지만, 이 호출이 깨졌다는 것은
+    KRX 응답 자체가 비정상이라는 신호이므로 해당 거래일 데이터 품질을 INVALID 로 본다.
+    """
+    from krx_fetch_guard import FetchSpec
+    spec = FetchSpec(kind="fundamental", market=market,
+                     required_columns=("티커", "PER", "PBR", "DIV"),
+                     optional_columns=("BPS", "EPS", "DPS"),
+                     min_rows=50, numeric_columns=("PER", "PBR", "DIV"),
+                     # PER 은 적자기업이 많아 전량 NaN 검사에서 제외. PBR 은 사실상 전 종목 존재.
+                     collapse_guard_columns=("PBR",), required=True)
+    frame = _run_guarded(
+        lambda: stock.get_market_fundamental_by_ticker(base_date, market=market).reset_index(), spec)
+    return frame.rename(columns={"티커": "symbol"})[["symbol", "PER", "PBR", "DIV"]]
 
 
 def safe_get_market_cap(base_date: str, market: str) -> pd.DataFrame:
-    try:
-        frame = stock.get_market_cap_by_ticker(base_date, market=market).reset_index()
-        if frame is None or frame.empty:
-            return pd.DataFrame(columns=["symbol", "marketCap"])
-
-        frame = frame.rename(
-            columns={
-                "티커": "symbol",
-                "시가총액": "marketCap",
-            }
-        )[["symbol", "marketCap"]]
-
-        frame["marketCap"] = frame["marketCap"].apply(normalize_market_cap_to_billion_krw)
-        return frame
-    except Exception as error:
-        print(f"[WARN] 시가총액 조회 실패 ({market}): {error}")
-        return pd.DataFrame(columns=["symbol", "marketCap"])
+    """시가총액 — EV(=시총+총부채-현금) 계산에 필수. 실패 시 fail-closed."""
+    from krx_fetch_guard import FetchSpec
+    spec = FetchSpec(kind="marketcap", market=market, required_columns=("티커", "시가총액"),
+                     min_rows=50, numeric_columns=("시가총액",),
+                     collapse_guard_columns=("시가총액",), required=True)
+    frame = _run_guarded(
+        lambda: stock.get_market_cap_by_ticker(base_date, market=market).reset_index(), spec)
+    frame = frame.rename(columns={"티커": "symbol", "시가총액": "marketCap"})[["symbol", "marketCap"]]
+    frame["marketCap"] = frame["marketCap"].apply(normalize_market_cap_to_billion_krw)
+    return frame
 
 
 def safe_get_ticker_list(base_date: str, market: str) -> list[str]:
-    try:
-        tickers = stock.get_market_ticker_list(base_date, market=market)
+    """종목 목록 — 비면 그 시장 전체가 결측이므로 fail-closed."""
+    from krx_fetch_guard import KrxDataInvalid, classify_error, redact, BACKOFF_SEC, MAX_ATTEMPTS
+    trail = []
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            tickers = stock.get_market_ticker_list(base_date, market=market)
+        except BaseException as error:  # noqa: BLE001
+            kind = classify_error(error)
+            trail.append({"attempt": attempt, "outcome": "EXCEPTION", "errorKind": kind,
+                          "errorFingerprint": redact(error)})
+            if kind == "RETRYABLE_TRANSIENT" and attempt < MAX_ATTEMPTS:
+                time.sleep(BACKOFF_SEC[min(attempt - 1, len(BACKOFF_SEC) - 1)])
+                continue
+            _FETCH_EVIDENCE.append({"kind": "tickers", "market": market, "verdict": "INVALID",
+                                    "code": "UPSTREAM_EXCEPTION", "attempts": attempt, "trail": trail})
+            raise KrxDataInvalid("UPSTREAM_EXCEPTION",
+                                 f"[tickers/{market}] {redact(error)} (시도 {attempt}회)")
         if tickers:
+            trail.append({"attempt": attempt, "outcome": "OK", "count": len(tickers)})
+            _FETCH_EVIDENCE.append({"kind": "tickers", "market": market, "verdict": "PASS",
+                                    "attempts": attempt, "count": len(tickers), "trail": trail})
             return tickers
-        return []
-    except Exception as error:
-        print(f"[WARN] 티커 목록 조회 실패 ({market}): {error}")
-        return []
+        trail.append({"attempt": attempt, "outcome": "INVALID", "invalidCode": "EMPTY_TICKER_LIST"})
+        if attempt < MAX_ATTEMPTS:
+            time.sleep(BACKOFF_SEC[min(attempt - 1, len(BACKOFF_SEC) - 1)])
+    _FETCH_EVIDENCE.append({"kind": "tickers", "market": market, "verdict": "INVALID",
+                            "code": "EMPTY_TICKER_LIST", "attempts": MAX_ATTEMPTS, "trail": trail})
+    raise KrxDataInvalid("EMPTY_TICKER_LIST", f"[tickers/{market}] 종목 목록이 비어 있음 (시도 {MAX_ATTEMPTS}회)")
 
 
 def get_market_frame(base_date: str, market: str) -> pd.DataFrame:
+    # 아래 4개 수집은 전부 검증·제한재시도를 거치며, 끝내 실패하면 KrxDataInvalid 를 올린다.
+    # 여기서 잡아 빈 프레임으로 되돌리지 않는다(fail-closed) — 상위에서 그 거래일을 INVALID 로 처리한다.
     tickers = safe_get_ticker_list(base_date, market)
-
-    if not tickers:
-        return pd.DataFrame(
-            columns=[
-                "symbol",
-                "corpName",
-                "marketName",
-                "industryName",
-                "price",
-                "marketCap",
-                "PER",
-                "PBR",
-                "DIV",
-            ]
-        )
 
     base = pd.DataFrame({"symbol": [str(ticker).zfill(6) for ticker in tickers]})
 
     ohlcv = safe_get_ohlcv(base_date, market)
-    if not ohlcv.empty:
-        ohlcv["symbol"] = ohlcv["symbol"].astype(str).str.zfill(6)
+    ohlcv["symbol"] = ohlcv["symbol"].astype(str).str.zfill(6)
 
     fundamental = safe_get_fundamental(base_date, market)
-    if not fundamental.empty:
-        fundamental["symbol"] = fundamental["symbol"].astype(str).str.zfill(6)
+    fundamental["symbol"] = fundamental["symbol"].astype(str).str.zfill(6)
 
     market_cap = safe_get_market_cap(base_date, market)
-    if not market_cap.empty:
-        market_cap["symbol"] = market_cap["symbol"].astype(str).str.zfill(6)
+    market_cap["symbol"] = market_cap["symbol"].astype(str).str.zfill(6)
 
     merged = (
         base.merge(ohlcv, on="symbol", how="left")
@@ -773,8 +801,31 @@ def build_payload() -> dict:
 
     news_sample_map = load_news_sample_map(NEWS_SAMPLE_PATH)
 
-    kospi = get_market_frame(base_date, "KOSPI")
-    kosdaq = get_market_frame(base_date, "KOSDAQ")
+    # KOSPI·KOSDAQ 을 독립 판정하되, 공식 산출물에는 두 시장 모두 PASS 가 필요하다(계약 B).
+    # 하나라도 INVALID 면 그 거래일 품질을 INVALID 로 기록하고 예외를 올려
+    # ranking·signal·apply·public 이 전부 진행되지 않게 한다(계약 A, fail-closed).
+    import krx_data_quality as Q
+    iso_date = updated_at
+    reset_fetch_evidence()
+    markets: dict[str, str] = {}
+    try:
+        frames = {}
+        for name in Q.REQUIRED_MARKETS:
+            frames[name] = get_market_frame(base_date, name)
+            markets[name] = "PASS"
+    except Exception as err:  # noqa: BLE001 — KrxDataInvalid 포함
+        failed = next((m for m in Q.REQUIRED_MARKETS if m not in markets), "UNKNOWN")
+        markets[failed] = "INVALID"
+        Q.write_status(Q.build_status(
+            date_iso=iso_date, verdict="INVALID", markets=markets,
+            evidence=fetch_evidence(),
+            reason=f"{type(err).__name__}: {getattr(err, 'message', str(err))[:300]}",
+            now=now_kst().isoformat()))
+        print(f"[BLOCKED] KRX 데이터 품질 INVALID ({iso_date}) — {failed} 실패. "
+              f"universe 생성 중단(과거값·0 대체 없음).")
+        raise
+
+    kospi, kosdaq = frames["KOSPI"], frames["KOSDAQ"]
     merged = pd.concat([kospi, kosdaq], ignore_index=True)
 
     merged["marketCap"] = merged["marketCap"].apply(safe_number)
@@ -797,6 +848,21 @@ def build_payload() -> dict:
             enriched_count += 1
 
         items.append(item)
+
+    # 종목 수 급감도 품질 결함으로 본다(부분 산출물 공개 금지).
+    if len(items) < MIN_UNIVERSE_COUNT:
+        Q.write_status(Q.build_status(
+            date_iso=iso_date, verdict="INVALID", markets=markets, evidence=fetch_evidence(),
+            universe_count=len(items),
+            reason=f"universe 종목 수 {len(items)} < 최소 {MIN_UNIVERSE_COUNT}(급감)",
+            now=now_kst().isoformat()))
+        raise RuntimeError(
+            f"[BLOCKED] universe 종목 수 급감: {len(items)} < {MIN_UNIVERSE_COUNT} — 산출물 생성 중단")
+
+    Q.write_status(Q.build_status(
+        date_iso=iso_date, verdict="PASS", markets=markets, evidence=fetch_evidence(),
+        universe_count=len(items), reason="KOSPI·KOSDAQ 응답 검증 통과",
+        now=now_kst().isoformat()))
 
     return {
         "data": items,

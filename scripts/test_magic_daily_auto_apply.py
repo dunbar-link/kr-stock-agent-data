@@ -118,13 +118,23 @@ check("founderPolicyAuthorized=True", appr["approval"]["founderPolicyAuthorized"
 check("approvalPhrase 불변", appr["approval"]["approvalPhrase"], "APPROVE_OFFICIAL_APPLY_2026-07-27")
 check("원본 ticket 불변(깊은 복사)", base_ticket["status"], "PENDING_APPROVAL")
 
+
+# WABABA-KRX-FUNDAMENTAL-RECOVERY-R1 — 게이트가 그 거래일 KRX 수집 품질 PASS 증거를 요구한다.
+# 테스트는 실제 파일 대신 fixture 를 주입한다(운영 상태 미접근).
+def QOK(date_iso):
+    import krx_data_quality as Q
+    return Q.build_status(date_iso=date_iso, verdict="PASS",
+                          markets={"KOSPI": "PASS", "KOSDAQ": "PASS"}, universe_count=2700)
+
+
 # ── 2) 게이트 PASS ─────────────────────────────────────────────────────────────
 print("[2] 전 게이트 PASS")
 canon = make_canonical()
 dr = make_dry_run("2026-07-27", "2026-07-24", 17, 19)
 rk = make_ranking("2026-07-24")
 g = AA.evaluate_auto_approval_gates(canonical=canon, target_exec_date="2026-07-27",
-                                    dry_run=dr, ranking=rk, rules=RULES)
+                                    dry_run=dr, ranking=rk, rules=RULES,
+                                    quality_status=QOK("2026-07-27"))
 check("eligible=True", g["eligible"], True)
 check("blockedCodes 0", len(g["blockedCodes"]), 0)
 check("만기 TDI 검사 통과(19+50=69)", g["checks"]["maturityTdiCorrect"], True)
@@ -137,8 +147,10 @@ def codes_of(**kw):
     c = kw.pop("canonical", canon)
     d = kw.pop("dry_run", dr)
     r = kw.pop("ranking", rk)
-    gg = AA.evaluate_auto_approval_gates(canonical=c, target_exec_date=kw.pop("target", "2026-07-27"),
-                                         dry_run=d, ranking=r, rules=RULES)
+    _t = kw.pop("target", "2026-07-27")
+    gg = AA.evaluate_auto_approval_gates(canonical=c, target_exec_date=_t,
+                                         dry_run=d, ranking=r, rules=RULES,
+                                         quality_status=kw.pop("quality_status", QOK(_t)))
     return gg["eligible"], [b["code"] for b in gg["blockedCodes"]]
 
 
@@ -192,10 +204,26 @@ check("REAL_ORDER_PATH_DETECTED", (e, AA.B_REAL_ORDER_PATH_DETECTED in c1), (Fal
 d_pw = make_dry_run("2026-07-27", "2026-07-24", 17, 19); d_pw["productionWriteCount"] = 3
 e, c1 = codes_of(dry_run=d_pw)
 check("PUBLIC_WRITE_DETECTED", (e, AA.B_PUBLIC_WRITE_DETECTED in c1), (False, True))
+# KRX 수집 품질 게이트(WABABA-KRX-FUNDAMENTAL-RECOVERY-R1) — 펀더멘털 INVALID 거래일은
+# Auto Apply 자체를 막는다. canonical write·sequence 증가·신규 lot·FIFO 매도 전부 0.
+import krx_data_quality as _Q
+e, c1 = codes_of(quality_status=None)                       # 증거 없음 = PASS 아님(fail-closed)
+check("KRX 품질 증거 없음 → 차단", (e, AA.B_KRX_DATA_QUALITY in c1), (False, True))
+e, c1 = codes_of(quality_status=_Q.build_status(
+    date_iso="2026-07-27", verdict="INVALID",
+    markets={"KOSPI": "INVALID", "KOSDAQ": "PASS"}, reason="필수 columns 누락"))
+check("KRX 품질 INVALID → 차단", (e, AA.B_KRX_DATA_QUALITY in c1), (False, True))
+e, c1 = codes_of(quality_status=_Q.build_status(
+    date_iso="2026-07-27", verdict="PASS", markets={"KOSPI": "PASS", "KOSDAQ": "INVALID"}))
+check("한 시장만 PASS → 차단(두 시장 모두 필요)", (e, AA.B_KRX_DATA_QUALITY in c1), (False, True))
+e, c1 = codes_of(quality_status=_Q.build_status(
+    date_iso="2026-07-24", verdict="PASS", markets={"KOSPI": "PASS", "KOSDAQ": "PASS"}))
+check("품질 증거 날짜 불일치 → 차단", (e, AA.B_KRX_DATA_QUALITY in c1), (False, True))
+
 check("WARNING 개념 없음(부분실패=차단)", AA.evaluate_auto_approval_gates(
     canonical=canon, target_exec_date="2026-07-27",
     dry_run=make_dry_run("2026-07-27", "2026-07-24", 17, 19, missing_eval=["X"]),
-    ranking=rk, rules=RULES)["eligible"], False)
+    ranking=rk, rules=RULES, quality_status=QOK("2026-07-27"))["eligible"], False)
 
 # ── 4) 순차성 ─────────────────────────────────────────────────────────────────
 print("[4] 미반영일 순차성(오래된 것부터, 1회 1건)")
@@ -225,7 +253,7 @@ for d in days:
     gg = AA.evaluate_auto_approval_gates(
         canonical=cur, target_exec_date=target,
         dry_run=make_dry_run(target, prev, seq + 1, tdi + 1, cash_before=cash),
-        ranking=make_ranking(prev), rules=RULES)
+        ranking=make_ranking(prev), rules=RULES, quality_status=QOK(target))
     if not gg["eligible"]:
         break
     applied.append((target, seq + 1, tdi + 1, lots + 10, cash - 1_000_000))

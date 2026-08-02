@@ -86,6 +86,8 @@ B_DRY_RUN_NOT_COMPLETED = "DRY_RUN_NOT_COMPLETED"
 B_LOOKAHEAD_FAILED = "LOOKAHEAD_FAILED"
 B_MATURITY_TDI_MISMATCH = "MATURITY_TDI_MISMATCH"
 B_REAL_ORDER_PATH_DETECTED = "REAL_ORDER_PATH_DETECTED"
+# WABABA-KRX-FUNDAMENTAL-RECOVERY-R1 — 그 거래일 KRX 수집 품질이 PASS 라는 증거가 없으면 apply 금지.
+B_KRX_DATA_QUALITY = "KRX_DATA_QUALITY_NOT_PASS"
 B_PUBLIC_WRITE_DETECTED = "PUBLIC_WRITE_DETECTED"
 
 OFFICIAL_FORMULA_VERSION = "book-faithful-v1-2026-43B5"
@@ -166,7 +168,8 @@ def unapplied_execution_dates(canonical: dict, today_iso: str) -> list:
 
 # ── 게이트 (AUTO_APPROVAL_ELIGIBLE) ─────────────────────────────────────────────
 def evaluate_auto_approval_gates(*, canonical: dict, target_exec_date: str, dry_run: dict | None,
-                                 ranking: dict | None, rules: dict) -> dict:
+                                 ranking: dict | None, rules: dict,
+                                 quality_status: dict | None = None) -> dict:
     """전 항목 PASS 여야만 eligible=True. WARNING 개념 없음 — 하나라도 실패하면 자동 apply 금지."""
     blocked, checks = [], {}
 
@@ -180,6 +183,19 @@ def evaluate_auto_approval_gates(*, canonical: dict, target_exec_date: str, dry_
     tdi_before = int(canonical.get("officialTradingDayIndex") or 0)
     cash_before = float(canonical.get("officialAvailableCash") or 0)
     cal = canonical.get("officialExecutionCalendar") or []
+
+    # KRX 수집 품질 게이트 — 펀더멘털/시세/시총이 INVALID 인 거래일은 여기서 끊는다(계약 A).
+    #   증거가 아예 없으면 PASS 로 간주하지 않는다(fail-closed).
+    #   이 gate 가 막으면 canonical write·sequence 증가·신규 lot·FIFO 매도가 모두 0 이 된다.
+    #   quality_status 미지정이면 디스크에서 읽는다(운영 경로). 테스트는 fixture 를 주입한다.
+    try:
+        import krx_data_quality as _Q
+        _qs = quality_status if quality_status is not None else _Q.read_status(target_exec_date)
+        _q_ok, _q_code, _q_detail = _Q.evaluate(_qs, target_exec_date)
+    except Exception as _e:  # noqa: BLE001 — 품질 모듈 자체 실패도 fail-closed
+        _q_ok, _q_code, _q_detail = False, B_KRX_DATA_QUALITY, f"품질 게이트 평가 실패: {_e}"
+    if not chk("krxDataQualityPass", _q_ok, B_KRX_DATA_QUALITY, _q_detail or _q_code):
+        return {"eligible": False, "blockedCodes": blocked, "checks": checks}
 
     if ranking is None:
         chk("signalPackagePresent", False, B_SIGNAL_MISSING, f"{target_exec_date} 신호 패키지 없음")

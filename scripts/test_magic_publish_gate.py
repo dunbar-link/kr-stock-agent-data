@@ -37,9 +37,18 @@ def apply_status(*, date: str, status: str = "APPLIED_AUTOMATICALLY", verdict: s
             "realOrderCount": real, "brokerApiCallCount": broker, "founderAction": "없음"}
 
 
-def ev(today, canon, appl, *, lock=False, model_err=None):
+def quality_ok(date_iso: str) -> dict:
+    """그 거래일 KRX 수집 품질 PASS 증거(WABABA-KRX-FUNDAMENTAL-RECOVERY-R1)."""
+    import krx_data_quality as Q
+    return Q.build_status(date_iso=date_iso, verdict="PASS",
+                          markets={"KOSPI": "PASS", "KOSDAQ": "PASS"}, universe_count=2700)
+
+
+def ev(today, canon, appl, *, lock=False, model_err=None, quality="ok"):
+    """quality: 'ok' = PASS 증거 주입 / None = 증거 없음 / dict = 그대로 주입."""
+    qs = quality_ok(today) if quality == "ok" else quality
     return G.evaluate(today_iso=today, canonical=canon, apply_status=appl,
-                      lock_held=lock, public_model_error=model_err)
+                      lock_held=lock, public_model_error=model_err, quality_status=qs)
 
 
 # ── 1) 실제 거래일 + 당일 apply 완료 → PROCEED ───────────────────────────────
@@ -162,6 +171,33 @@ def t17_canonical_unreadable_blocked():
     assert r["decision"] == "BLOCKED_CANONICAL_UNREADABLE", r
 
 
+def t18c_krx_quality_evidence_missing_blocked():
+    """KRX 수집 품질 증거가 없으면 publish 금지(fail-closed, 계약 A)."""
+    r = ev(MON, canonical(latest=MON), apply_status(date=MON), quality=None)
+    assert r["decision"] == "BLOCKED_KRX_QUALITY_EVIDENCE_MISSING", r
+    assert r["checks"]["krxDataQualityPass"] is False
+
+
+def t18d_krx_quality_invalid_blocked():
+    """펀더멘털 INVALID 거래일은 홈페이지 반영도 막는다."""
+    import krx_data_quality as Q
+    bad = Q.build_status(date_iso=MON, verdict="INVALID",
+                         markets={"KOSPI": "INVALID", "KOSDAQ": "PASS"},
+                         reason="필수 columns 누락")
+    r = ev(MON, canonical(latest=MON), apply_status(date=MON), quality=bad)
+    assert r["decision"] == "BLOCKED_KRX_DATA_QUALITY_INVALID", r
+    assert r["verdict"] == "BLOCKED"
+
+
+def t18e_krx_quality_single_market_fail_blocked():
+    """KOSPI·KOSDAQ 둘 다 PASS 여야 공식 산출물 진행(계약 B)."""
+    import krx_data_quality as Q
+    half = Q.build_status(date_iso=MON, verdict="PASS",
+                          markets={"KOSPI": "PASS", "KOSDAQ": "INVALID"})
+    r = ev(MON, canonical(latest=MON), apply_status(date=MON), quality=half)
+    assert r["decision"] == "BLOCKED_KRX_MARKET_NOT_PASS", r
+
+
 def t18_public_model_invalid_blocked():
     r = ev(MON, canonical(latest=MON), apply_status(date=MON),
            model_err="MappingValidationError: seq 불연속")
@@ -246,6 +282,9 @@ TESTS = [
     ("16 canonical 최신 != 당일 → BLOCKED", t16_canonical_latest_not_today_blocked),
     ("17 canonical 판독 불가 → BLOCKED", t17_canonical_unreadable_blocked),
     ("18 public 변환 gate 실패 → BLOCKED", t18_public_model_invalid_blocked),
+    ("18c KRX 품질 증거 없음 → BLOCKED", t18c_krx_quality_evidence_missing_blocked),
+    ("18d KRX 품질 INVALID → BLOCKED", t18d_krx_quality_invalid_blocked),
+    ("18e 한 시장만 PASS → BLOCKED", t18e_krx_quality_single_market_fail_blocked),
     ("19 모든 판정에서 실주문·브로커·write 0", t19_all_decisions_report_zero_orders),
     ("20 선행 미완료를 성공으로 위장하지 않음", t20_blocked_is_not_disguised_as_success),
     ("21 BLOCKED 에 Founder 행동 1개 존재", t21_founder_action_present_on_blocked),

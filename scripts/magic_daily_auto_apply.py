@@ -88,6 +88,8 @@ B_MATURITY_TDI_MISMATCH = "MATURITY_TDI_MISMATCH"
 B_REAL_ORDER_PATH_DETECTED = "REAL_ORDER_PATH_DETECTED"
 # WABABA-KRX-FUNDAMENTAL-RECOVERY-R1 — 그 거래일 KRX 수집 품질이 PASS 라는 증거가 없으면 apply 금지.
 B_KRX_DATA_QUALITY = "KRX_DATA_QUALITY_NOT_PASS"
+# WABABA-KRX-SEQ20-22-INTEGRITY-AUDIT-QUARANTINE-R1 — 감사 격리 중 신규 sequence 누적 금지.
+B_AUDIT_QUARANTINE = "AUDIT_QUARANTINE_ACTIVE"
 B_PUBLIC_WRITE_DETECTED = "PUBLIC_WRITE_DETECTED"
 
 OFFICIAL_FORMULA_VERSION = "book-faithful-v1-2026-43B5"
@@ -183,6 +185,16 @@ def evaluate_auto_approval_gates(*, canonical: dict, target_exec_date: str, dry_
     tdi_before = int(canonical.get("officialTradingDayIndex") or 0)
     cash_before = float(canonical.get("officialAvailableCash") or 0)
     cal = canonical.get("officialExecutionCalendar") or []
+
+    # 감사 격리 게이트 — 최우선. 무결성 감사 중에는 신규 sequence 를 절대 쌓지 않는다.
+    #   marker 판독 불가도 격리로 본다(fail-closed). 시간 경과로 자동 해제되지 않는다.
+    try:
+        import audit_quarantine as _AQ
+        _aq_ok, _aq_code, _aq_detail = _AQ.gate()
+    except Exception as _e:  # noqa: BLE001 — 격리 모듈 실패도 fail-closed
+        _aq_ok, _aq_code, _aq_detail = False, B_AUDIT_QUARANTINE, f"격리 게이트 평가 실패: {_e}"
+    if not chk("auditQuarantineClear", _aq_ok, B_AUDIT_QUARANTINE, _aq_detail or _aq_code):
+        return {"eligible": False, "blockedCodes": blocked, "checks": checks}
 
     # KRX 수집 품질 게이트 — 펀더멘털/시세/시총이 INVALID 인 거래일은 여기서 끊는다(계약 A).
     #   증거가 아예 없으면 PASS 로 간주하지 않는다(fail-closed).

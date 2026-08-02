@@ -45,6 +45,9 @@ APPLY_OK_STATUSES = {"APPLIED_AUTOMATICALLY", "NO_ACTION_ALREADY_CURRENT"}
 
 EXIT_PROCEED, EXIT_SKIP, EXIT_BLOCKED = 0, 10, 2
 
+# 격리 모듈 자체를 못 읽을 때 쓸 코드(fail-closed 기본값)
+AQ_FALLBACK_CODE = "BLOCKED_AUDIT_QUARANTINE_ACTIVE"
+
 
 def _latest_completed_date(canonical: dict):
     days = [d for d in (canonical.get("dailyLedger") or []) if d.get("runStatus") == "COMPLETED"]
@@ -76,6 +79,18 @@ def evaluate(*, today_iso: str, canonical: dict | None, apply_status: dict | Non
              quality_status: dict | None = None) -> dict:
     """순수 판정(파일 접근 없음 — 호출자가 읽어서 넘긴다). 테스트에서 그대로 재사용."""
     checks: dict = {}
+
+    # 0) 감사 격리 — 최우선. 무결성 감사 중에는 public 반영도 하지 않는다.
+    try:
+        import audit_quarantine as AQ
+        aq_ok, aq_code, aq_detail = AQ.gate()
+    except Exception as e:  # noqa: BLE001 — 격리 모듈 실패도 fail-closed
+        aq_ok, aq_code, aq_detail = False, AQ_FALLBACK_CODE, f"격리 게이트 평가 실패: {e}"
+    checks["auditQuarantineClear"] = aq_ok
+    if not aq_ok:
+        return _result(aq_code, verdict="BLOCKED", today=today_iso,
+                       reason=aq_detail, checks=checks,
+                       founderAction="무결성 감사 완료 후 해제(자동 해제 없음)")
 
     # 1) 실제 거래일 — 주말/공휴일/임시휴장은 여기서 정상 self-skip 된다.
     is_td = C.is_krx_trading_day(today_iso)

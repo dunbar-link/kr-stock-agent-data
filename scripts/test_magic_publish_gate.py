@@ -11,6 +11,13 @@ from pathlib import Path
 
 import magic_publish_gate as G
 
+# 감사 격리 marker 는 *운영 상태*다. 테스트가 그걸 읽으면 격리 활성 시 무관하게 실패한다.
+# 테스트 동안만 marker 경로를 임시 위치로 돌려 격리 없음 상태로 격리한다(운영 marker 미접촉).
+import tempfile as _tf, audit_quarantine as _AQ
+_AQ.MARKER_PATH = __import__('pathlib').Path(_tf.mkdtemp()) / 'audit-quarantine.json'
+
+
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # 실제 거래일 (2026-07-24 금, 07-27 월). 07-25 토 / 07-26 일.

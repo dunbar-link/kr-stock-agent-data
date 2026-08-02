@@ -18,7 +18,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import magic_daily_common as C  # noqa: E402
-import magic_daily_auto_apply as AA  # noqa: E402
+import magic_daily_auto_apply as AA
+
+# 감사 격리 marker 는 *운영 상태*다. 테스트가 그걸 읽으면 격리 활성 시 무관하게 실패한다.
+# 테스트 동안만 marker 경로를 임시 위치로 돌려 격리 없음 상태로 격리한다(운영 marker 미접촉).
+import tempfile as _tf, audit_quarantine as _AQ
+_AQ.MARKER_PATH = __import__('pathlib').Path(_tf.mkdtemp()) / 'audit-quarantine.json'
+
+  # noqa: E402
 
 _pass = 0
 _fail = 0

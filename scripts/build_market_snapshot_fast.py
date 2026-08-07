@@ -10,9 +10,10 @@ from build_market_snapshot import (
     NEWS_SAMPLE_PATH,
     build_dart_financial_map,
     build_item,
+    collect_markets_with_quality,
     find_latest_business_day,
-    get_market_frame,
     load_news_sample_map,
+    record_universe_quality,
     safe_number,
 )
 
@@ -150,8 +151,11 @@ def build_payload() -> dict:
 
     news_sample_map = load_news_sample_map(NEWS_SAMPLE_PATH)
 
-    kospi = get_market_frame(base_date, "KOSPI")
-    kosdaq = get_market_frame(base_date, "KOSDAQ")
+    # ★ 실제 일일 파이프라인(Signal)이 타는 경로가 여기다. 품질 증거를 반드시 여기서도 남긴다.
+    #   (증거 생성 경로와 Auto Apply 소비 경로가 어긋나면 매 거래일 fail-closed 로 막힌다 —
+    #    2026-08-03~08-07 운영 중단 실사고)
+    frames, markets, iso_date = collect_markets_with_quality(base_date, updated_at)
+    kospi, kosdaq = frames["KOSPI"], frames["KOSDAQ"]
     merged = pd.concat([kospi, kosdaq], ignore_index=True)
 
     merged["marketCap"] = merged["marketCap"].apply(safe_number)
@@ -206,6 +210,9 @@ def build_payload() -> dict:
             enriched_count += 1
 
         items.append(item)
+
+    # universe 확정 후 품질 PASS 기록(종목 수 급감이면 INVALID + 예외).
+    record_universe_quality(iso_date, markets, len(items))
 
     return {
         "data": items,

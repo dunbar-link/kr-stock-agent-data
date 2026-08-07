@@ -254,6 +254,38 @@ def t18b_snapshot_fetchers_are_fail_closed():
 
 
 # ── 19 비밀값 노출 0 ──────────────────────────────────────────────────────────
+def t18c_both_entrypoints_record_quality():
+    """★ 2026-08-03~08-07 운영 중단 재발 방지.
+
+    일일 파이프라인(Signal)은 build_market_snapshot_fast.build_payload 를 탄다.
+    품질 증거 기록을 build_market_snapshot 쪽에만 넣으면 자연 실행에서 증거가 생기지 않아
+    fail-closed gate 가 매 거래일 Auto Apply 를 막는다(실사고).
+    두 entrypoint 가 모두 공용 수집·기록 함수를 호출하는지 소스로 고정한다.
+    """
+    slow = (ROOT / "scripts" / "build_market_snapshot.py").read_text(encoding="utf-8")
+    fast = (ROOT / "scripts" / "build_market_snapshot_fast.py").read_text(encoding="utf-8")
+    for name, src in (("build_market_snapshot", slow), ("build_market_snapshot_fast", fast)):
+        assert "collect_markets_with_quality(" in src, f"{name} 이 공용 수집 함수를 호출하지 않음"
+        assert "record_universe_quality(" in src, f"{name} 이 품질 기록을 하지 않음"
+    # fast 가 옛 경로(get_market_frame 직접 호출)로 되돌아가지 않았는지
+    assert "get_market_frame(base_date," not in fast, \
+        "fast 가 get_market_frame 을 직접 호출하면 품질 기록을 건너뛴다"
+    assert "collect_markets_with_quality" in fast.split("from build_market_snapshot import")[1][:400], \
+        "fast 가 공용 함수를 import 하지 않음"
+
+
+def t18d_quality_written_where_gate_reads():
+    """품질 증거 생성 경로와 Auto Apply·Publish 소비 경로가 같은 파일을 가리키는지."""
+    import krx_data_quality as Q
+    assert Q.LATEST_JSON.parent.name == "wababa"
+    assert Q.LATEST_JSON.name == "krx-data-quality-latest.json"
+    # 날짜본도 같은 디렉터리
+    assert Q.path_for("2026-08-03").parent == Q.LATEST_JSON.parent
+    # gate 가 읽는 함수가 그 경로를 쓰는지
+    src = Path(Q.__file__).read_text(encoding="utf-8")
+    assert "def read_status" in src and "def gate" in src
+
+
 def t19_no_secret_in_diagnostics():
     # 아래 값은 전부 합성 더미다(실제 자격증명 아님). redaction 이 실제로 지우는지 확인용.
     leaky = ("login failed KRX_ID=DUMMYID-NOT-REAL KRX_PW=DUMMYPW-NOT-REAL "
@@ -346,6 +378,8 @@ TESTS = [
     ("17c 증거 없음은 PASS 아님", t17c_missing_evidence_is_not_pass),
     ("18 정상 시 gate 통과(무회귀)", t18_normal_quality_passes_gate),
     ("18b safe_get_* fail-closed 계약", t18b_snapshot_fetchers_are_fail_closed),
+    ("18c 두 entrypoint 모두 품질 기록(운영중단 재발방지)", t18c_both_entrypoints_record_quality),
+    ("18d 품질 생성 경로 == gate 소비 경로", t18d_quality_written_where_gate_reads),
     ("19 비밀값 redaction", t19_no_secret_in_diagnostics),
     ("19b 증거에 원문·비밀값 없음", t19b_evidence_carries_no_raw_body),
     ("19c 품질 상태에 비밀값 없음", t19c_quality_status_has_no_secrets),

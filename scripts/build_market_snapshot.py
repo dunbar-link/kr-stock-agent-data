@@ -245,6 +245,56 @@ def safe_get_ticker_list(base_date: str, market: str) -> list[str]:
     raise KrxDataInvalid("EMPTY_TICKER_LIST", f"[tickers/{market}] 종목 목록이 비어 있음 (시도 {MAX_ATTEMPTS}회)")
 
 
+def collect_markets_with_quality(base_date: str, iso_date: str):
+    """KOSPI·KOSDAQ 을 수집하고 그 거래일 품질 증거를 기록한다. (frames, markets, iso_date) 반환.
+
+    ★ 이 함수는 build_market_snapshot.build_payload 와 build_market_snapshot_fast.build_payload
+      **양쪽 모두** 호출해야 한다. 한쪽에만 넣으면 실제 일일 파이프라인(=fast 경로)에서
+      품질 증거가 생성되지 않아, fail-closed gate 가 매 거래일 Auto Apply 를 막는다.
+      (2026-08-03~08-07 운영 중단 실사고 — 증거 생성 경로와 소비 경로 불일치)
+
+    두 시장 중 하나라도 검증 실패면 품질 INVALID 를 기록하고 예외를 올려 universe 생성을 중단한다.
+    과거값·0·전일값 대체 없음(fail-closed).
+    """
+    import krx_data_quality as Q
+    reset_fetch_evidence()
+    markets: dict[str, str] = {}
+    frames: dict = {}
+    try:
+        for name in Q.REQUIRED_MARKETS:
+            frames[name] = get_market_frame(base_date, name)
+            markets[name] = "PASS"
+    except Exception as err:  # noqa: BLE001 — KrxDataInvalid 포함
+        failed = next((m for m in Q.REQUIRED_MARKETS if m not in markets), "UNKNOWN")
+        markets[failed] = "INVALID"
+        Q.write_status(Q.build_status(
+            date_iso=iso_date, verdict="INVALID", markets=markets,
+            evidence=fetch_evidence(),
+            reason=f"{type(err).__name__}: {getattr(err, 'message', str(err))[:300]}",
+            now=now_kst().isoformat()))
+        print(f"[BLOCKED] KRX 데이터 품질 INVALID ({iso_date}) — {failed} 실패. "
+              f"universe 생성 중단(과거값·0 대체 없음).")
+        raise
+    return frames, markets, iso_date
+
+
+def record_universe_quality(iso_date: str, markets: dict, universe_count: int) -> None:
+    """universe 최종 산출 직후 품질 PASS 를 확정 기록한다(종목 수 급감이면 INVALID + 예외)."""
+    import krx_data_quality as Q
+    if universe_count < MIN_UNIVERSE_COUNT:
+        Q.write_status(Q.build_status(
+            date_iso=iso_date, verdict="INVALID", markets=markets, evidence=fetch_evidence(),
+            universe_count=universe_count,
+            reason=f"universe 종목 수 {universe_count} < 최소 {MIN_UNIVERSE_COUNT}(급감)",
+            now=now_kst().isoformat()))
+        raise RuntimeError(
+            f"[BLOCKED] universe 종목 수 급감: {universe_count} < {MIN_UNIVERSE_COUNT} — 산출물 생성 중단")
+    Q.write_status(Q.build_status(
+        date_iso=iso_date, verdict="PASS", markets=markets, evidence=fetch_evidence(),
+        universe_count=universe_count, reason="KOSPI·KOSDAQ 응답 검증 통과",
+        now=now_kst().isoformat()))
+
+
 def get_market_frame(base_date: str, market: str) -> pd.DataFrame:
     # 아래 4개 수집은 전부 검증·제한재시도를 거치며, 끝내 실패하면 KrxDataInvalid 를 올린다.
     # 여기서 잡아 빈 프레임으로 되돌리지 않는다(fail-closed) — 상위에서 그 거래일을 INVALID 로 처리한다.
@@ -804,26 +854,7 @@ def build_payload() -> dict:
     # KOSPI·KOSDAQ 을 독립 판정하되, 공식 산출물에는 두 시장 모두 PASS 가 필요하다(계약 B).
     # 하나라도 INVALID 면 그 거래일 품질을 INVALID 로 기록하고 예외를 올려
     # ranking·signal·apply·public 이 전부 진행되지 않게 한다(계약 A, fail-closed).
-    import krx_data_quality as Q
-    iso_date = updated_at
-    reset_fetch_evidence()
-    markets: dict[str, str] = {}
-    try:
-        frames = {}
-        for name in Q.REQUIRED_MARKETS:
-            frames[name] = get_market_frame(base_date, name)
-            markets[name] = "PASS"
-    except Exception as err:  # noqa: BLE001 — KrxDataInvalid 포함
-        failed = next((m for m in Q.REQUIRED_MARKETS if m not in markets), "UNKNOWN")
-        markets[failed] = "INVALID"
-        Q.write_status(Q.build_status(
-            date_iso=iso_date, verdict="INVALID", markets=markets,
-            evidence=fetch_evidence(),
-            reason=f"{type(err).__name__}: {getattr(err, 'message', str(err))[:300]}",
-            now=now_kst().isoformat()))
-        print(f"[BLOCKED] KRX 데이터 품질 INVALID ({iso_date}) — {failed} 실패. "
-              f"universe 생성 중단(과거값·0 대체 없음).")
-        raise
+    frames, markets, iso_date = collect_markets_with_quality(base_date, updated_at)
 
     kospi, kosdaq = frames["KOSPI"], frames["KOSDAQ"]
     merged = pd.concat([kospi, kosdaq], ignore_index=True)
@@ -850,19 +881,7 @@ def build_payload() -> dict:
         items.append(item)
 
     # 종목 수 급감도 품질 결함으로 본다(부분 산출물 공개 금지).
-    if len(items) < MIN_UNIVERSE_COUNT:
-        Q.write_status(Q.build_status(
-            date_iso=iso_date, verdict="INVALID", markets=markets, evidence=fetch_evidence(),
-            universe_count=len(items),
-            reason=f"universe 종목 수 {len(items)} < 최소 {MIN_UNIVERSE_COUNT}(급감)",
-            now=now_kst().isoformat()))
-        raise RuntimeError(
-            f"[BLOCKED] universe 종목 수 급감: {len(items)} < {MIN_UNIVERSE_COUNT} — 산출물 생성 중단")
-
-    Q.write_status(Q.build_status(
-        date_iso=iso_date, verdict="PASS", markets=markets, evidence=fetch_evidence(),
-        universe_count=len(items), reason="KOSPI·KOSDAQ 응답 검증 통과",
-        now=now_kst().isoformat()))
+    record_universe_quality(iso_date, markets, len(items))
 
     return {
         "data": items,

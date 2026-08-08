@@ -35,7 +35,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
 $taskName  = "Wababa PIT Acquisition Resume"
 $exe       = "C:\Users\duria\AppData\Local\Python\pythoncore-3.14-64\python.exe"
-$arguments = "scripts\research\build_pit_snapshots.py --start 2007-01 --end 2026-08 --minutes-budget 20"
+$arguments = "scripts\research\build_pit_snapshots.py --start 2007-01 --end 2026-08 --minutes-budget 20 --auto-research"
 $workDir   = "C:\work\kr-stock-agent-data-new"
 
 Write-Host "=== Wababa PIT Acquisition Resume 등록 ===" -ForegroundColor Cyan

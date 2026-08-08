@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pit_acquire_guard as G  # noqa: E402
+import pit_pipeline_state as P  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "_cache" / "pit-snapshots"
@@ -168,6 +169,8 @@ def main(argv=None) -> int:
                     help="KRX 차단 여부만 read-only 1콜로 확인하고 종료(수집 안 함).")
     ap.add_argument("--plan-only", action="store_true",
                     help="네트워크 없이 '무엇을 몇 콜로 받을지'만 계산하고 종료.")
+    ap.add_argument("--auto-research", action="store_true",
+                    help="수집이 끝나고 데이터가 충분하면 baseline→matrix→robust 를 연속 실행(승인 범위 내).")
     args = ap.parse_args(argv)
 
     if args.status:
@@ -185,17 +188,29 @@ def main(argv=None) -> int:
     # ── ① 선차단검사(preflight) — 대량 요청 *전에* read-only 1콜만 ────────────────
     #   차단 상태에서 수집 루프를 절대 시작하지 않는다. 반복 probe 도 하지 않는다(1회로 끝).
     cp = G.Checkpoint(CP_PATH)
+    pst = P.load_status()
     st = G.block_status(G.default_fetch)
     log(f"preflight: state={st['state']} http={st.get('httpStatus')} reason={st['reason']}")
     if st["state"] != "CLEAR":
         cp.mark_blocked()
         cp.data["lastState"] = st["state"]
         cp.save()
+        # 차단이 유지되는 동안은 상태파일만 조용히 갱신한다.
+        #   WAIT_AUTO_RESUME 은 '의미 있는 전이'가 아니므로 30분마다 보고서를 만들지 않는다.
+        P.transition(pst, "WAIT_AUTO_RESUME", {"preflight": st, "acquisitionCalls": 0})
+        P.save_status(pst)
         print(json.dumps({"preflight": st, "acquired": 0,
+                          "state": "WAIT_AUTO_RESUME",
                           "stopped": "BLOCKED_OR_UNKNOWN_NO_FURTHER_CALLS",
                           "note": "차단은 우회 대상이 아니라 정지 신호다. 재시도 루프를 돌리지 않는다."},
                          ensure_ascii=False))
         return 3
+
+    # 차단이 풀린 첫 실행은 의미 있는 전이다 — 이때만 보고서를 남긴다.
+    if pst.get("state") in (None, "WAIT_AUTO_RESUME"):
+        if P.transition(pst, "BLOCK_CLEARED_ACQUISITION_STARTED", {"preflight": st}):
+            P.write_transition_report("BLOCK_CLEARED_ACQUISITION_STARTED", {"preflight": st})
+        P.save_status(pst)
     if args.preflight_only:
         print(json.dumps({"preflight": st}, ensure_ascii=False))
         return 0
@@ -293,8 +308,26 @@ def main(argv=None) -> int:
     remaining = len(G.pending_months(targets, OUT_DIR, cp))
     log(f"COMPLETE done={done} failed={failed} remaining={remaining} "
         f"stop={stop_reason} {time.time()-t0:.0f}s")
+
+    # ── ③ 수집 완료 → 승인 범위 내에서 연구 자동 연속 진행 ──────────────────────
+    research = None
+    if remaining == 0 and stop_reason != "BLOCKED_MID_RUN":
+        adq = P.data_adequacy()
+        detail = {"remaining": 0, "totalCalls": cp.data["totalCalls"], "adequacy": adq}
+        if P.transition(pst, "DATA_ACQUISITION_COMPLETE", detail):
+            P.write_transition_report("DATA_ACQUISITION_COMPLETE", detail)
+        P.save_status(pst)
+        if args.auto_research and adq["adequate"]:
+            log("데이터 충분 — baseline → matrix → robust 연속 실행")
+            research = P.run_research(pst)
+        elif args.auto_research:
+            log(f"데이터 부족(유효 연속 {adq['usableContiguousMonths']}개월 < {adq['minRequired']}) — 연구 보류")
+    P.save_status(pst)
+
     print(json.dumps({"done": done, "failed": failed, "skipped": skipped,
                       "remaining": remaining, "stopReason": stop_reason,
+                      "pipelineState": pst.get("state"),
+                      "research": research,
                       "names": len(names), "totalCalls": cp.data["totalCalls"],
                       "outDir": str(OUT_DIR)}, ensure_ascii=False))
     return 0

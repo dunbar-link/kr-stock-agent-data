@@ -31,10 +31,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pit_acquire_guard as G  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "_cache" / "pit-snapshots"
 TD_PATH = OUT_DIR / "_trading-days.json"
 NAME_PATH = OUT_DIR / "_ticker-names.json"
+CP_PATH = OUT_DIR / "_checkpoint.json"
 
 COLS = ["ticker", "market", "close", "marketCap", "shares", "PER", "PBR", "EPS", "BPS", "DIV", "DPS"]
 
@@ -154,16 +158,46 @@ def main(argv=None) -> int:
     #   (data.krx.co.kr 로그인 응답이 JSON 대신 `.ip-block-page` HTML 로 바뀌고 pykrx import 자체가 실패).
     #   그 사이 와바바 일일 파이프라인(16:25 Auto Apply 등)도 같이 막힌다.
     #   → 기본 간격을 1.0s 로 올리고, 한 번에 받는 개월 수를 제한한다. 나눠서 여러 번 돌리는 것이 정상 사용법이다.
-    ap.add_argument("--sleep", type=float, default=1.0)
-    ap.add_argument("--max-per-run", type=int, default=60,
-                    help="한 번 실행에서 새로 받을 최대 개월 수(KRX 차단 방지). 0=무제한(권장하지 않음)")
+    ap.add_argument("--sleep", type=float, default=0.0,
+                    help="0이면 pit_acquire_guard 의 pacing(분당 안전콜 역산)을 쓴다. 수동 지정은 권장하지 않는다.")
+    ap.add_argument("--max-per-run", type=int, default=0,
+                    help="0이면 guard 가 --minutes-budget 으로 batch 를 역산한다(고정 60개월 가정 금지).")
+    ap.add_argument("--minutes-budget", type=float, default=20.0,
+                    help="이번 실행에 쓸 시간 예산(분). batch 크기를 이걸로 역산한다.")
+    ap.add_argument("--preflight-only", action="store_true",
+                    help="KRX 차단 여부만 read-only 1콜로 확인하고 종료(수집 안 함).")
+    ap.add_argument("--plan-only", action="store_true",
+                    help="네트워크 없이 '무엇을 몇 콜로 받을지'만 계산하고 종료.")
     args = ap.parse_args(argv)
 
     if args.status:
-        n = len(list(OUT_DIR.glob("20*.csv.gz"))) if OUT_DIR.exists() else 0
-        got = sorted(p.stem.replace(".csv", "") for p in OUT_DIR.glob("20*.csv.gz")) if n else []
+        n = len(list(OUT_DIR.glob("[12]*.csv.gz"))) if OUT_DIR.exists() else 0
+        got = sorted(p.name.split(".")[0] for p in OUT_DIR.glob("[12]*.csv.gz")) if n else []
+        cp = G.Checkpoint(CP_PATH)
         print(json.dumps({"snapshots": n, "first": got[0] if got else None,
-                          "last": got[-1] if got else None}, ensure_ascii=False))
+                          "last": got[-1] if got else None,
+                          "checkpoint": {k: cp.data.get(k) for k in
+                                         ("runs", "totalCalls", "lastRunAt", "lastBlockedAt", "lastState")},
+                          "emptyMonths": len(cp.data.get("empty", [])),
+                          "failedMonths": len(cp.data.get("failed", {}))}, ensure_ascii=False))
+        return 0
+
+    # ── ① 선차단검사(preflight) — 대량 요청 *전에* read-only 1콜만 ────────────────
+    #   차단 상태에서 수집 루프를 절대 시작하지 않는다. 반복 probe 도 하지 않는다(1회로 끝).
+    cp = G.Checkpoint(CP_PATH)
+    st = G.block_status(G.default_fetch)
+    log(f"preflight: state={st['state']} http={st.get('httpStatus')} reason={st['reason']}")
+    if st["state"] != "CLEAR":
+        cp.mark_blocked()
+        cp.data["lastState"] = st["state"]
+        cp.save()
+        print(json.dumps({"preflight": st, "acquired": 0,
+                          "stopped": "BLOCKED_OR_UNKNOWN_NO_FURTHER_CALLS",
+                          "note": "차단은 우회 대상이 아니라 정지 신호다. 재시도 루프를 돌리지 않는다."},
+                         ensure_ascii=False))
+        return 3
+    if args.preflight_only:
+        print(json.dumps({"preflight": st}, ensure_ascii=False))
         return 0
 
     from pykrx import stock  # noqa: PLC0415
@@ -171,6 +205,19 @@ def main(argv=None) -> int:
     days = load_trading_days(stock)
     targets = month_first_trading_days(days, args.start, args.end)
     log(f"target months: {len(targets)}  {targets[0]} ~ {targets[-1]}")
+
+    # ── ② 이번 실행 계획 — 남은 달만, 보수적 batch 로 ────────────────────────────
+    pl = G.plan(targets, OUT_DIR, cp, minutes_budget=args.minutes_budget)
+    batch_take = set(pl["take"])
+    pace = args.sleep if args.sleep > 0 else G.pacing_seconds()
+    log(f"plan: pending={pl['pendingTotal']} take={len(pl['take'])} "
+        f"calls≈{pl['estimatedCalls']} pace={pace:.0f}s eta≈{pl['estimatedMinutes']}min "
+        f"remainingAfter={pl['remainingAfter']}")
+    if args.plan_only:
+        print(json.dumps({"preflight": st, "plan": pl}, ensure_ascii=False))
+        return 0
+    cp.start_run()
+    cp.save()
 
     names = {}
     if NAME_PATH.exists():
@@ -182,9 +229,10 @@ def main(argv=None) -> int:
     done = skipped = failed = 0
     last_name_year = None
     t0 = time.time()
-    for i, iso in enumerate(targets, 1):
-        p = OUT_DIR / f"{iso}.csv.gz"
-        if p.exists():
+    stop_reason = "COMPLETED_BATCH"
+    hard_cap = args.max_per_run if args.max_per_run else len(pl["take"])
+    for iso in targets:
+        if iso not in batch_take:          # 이번 batch 대상만 (이미 받은 달·이월분은 건드리지 않는다)
             skipped += 1
             continue
         year = iso[:4]
@@ -193,29 +241,62 @@ def main(argv=None) -> int:
                 NAME_PATH.parent.mkdir(parents=True, exist_ok=True)
                 NAME_PATH.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
             last_name_year = year
-        try:
-            rows = build_snapshot(stock, iso)
-        except Exception as e:  # noqa: BLE001
-            log(f"{iso} FAILED {type(e).__name__}: {e}")
+
+        # bounded retry + exponential backoff. 차단이 확인되면 재시도하지 않고 즉시 정지한다.
+        rows, err = None, None
+        for attempt in range(1, 4):
+            try:
+                rows = build_snapshot(stock, iso)
+                err = None
+                break
+            except Exception as e:  # noqa: BLE001
+                err = f"{type(e).__name__}: {e}"
+                bs = G.block_status(G.default_fetch)
+                if bs["state"] == "BLOCKED":
+                    log(f"{iso} 차단 감지 — 즉시 중단(재시도 안 함)")
+                    cp.mark_blocked()
+                    stop_reason = "BLOCKED_MID_RUN"
+                    err = "BLOCKED"
+                    break
+                wait = G.backoff_seconds(attempt)
+                log(f"{iso} 실패({err}) — {wait:.0f}s 후 재시도 {attempt}/3")
+                time.sleep(wait)
+        if err == "BLOCKED":
+            break
+        if err:
+            log(f"{iso} FAILED(재시도 소진) {err}")
+            cp.mark_failed(iso, err)
             failed += 1
-            time.sleep(1.0)
+            cp.save()
             continue
         if not rows:
-            log(f"{iso} empty — skip")
+            log(f"{iso} empty — 이 달은 데이터 없음으로 기록(재요청 안 함)")
+            cp.mark_empty(iso)
             failed += 1
+            cp.save()
             continue
-        write_snapshot(iso, rows)
-        done += 1
-        if done % 12 == 0:
-            log(f"{iso}  done={done} skipped={skipped} failed={failed}  {time.time()-t0:.0f}s")
-        if args.max_per_run and done >= args.max_per_run:
-            log(f"max-per-run {args.max_per_run} 도달 — 여기서 멈춘다(KRX 차단 방지). 다시 실행하면 이어서 받는다.")
-            break
-        time.sleep(args.sleep)
 
-    log(f"COMPLETE done={done} skipped={skipped} failed={failed} names={len(names)} {time.time()-t0:.0f}s")
-    print(json.dumps({"done": done, "skipped": skipped, "failed": failed,
-                      "names": len(names), "outDir": str(OUT_DIR)}, ensure_ascii=False))
+        write_snapshot(iso, rows)
+        cp.mark_done(iso)
+        cp.save()                          # 매 건 원자적 저장 — 중간에 죽어도 진행분이 보존된다
+        done += 1
+        if done % 6 == 0:
+            log(f"{iso}  done={done} failed={failed}  {time.time()-t0:.0f}s")
+        if done >= hard_cap:
+            stop_reason = "BATCH_LIMIT_REACHED"
+            log(f"batch 상한 {hard_cap} 도달 — 정상 종료. 다시 실행하면 이어서 받는다.")
+            break
+        G.sleep_with_jitter(pace)          # 고정간격 대신 지터를 섞는다
+
+    cp.data["lastState"] = stop_reason
+    cp.save()
+    remaining = len(G.pending_months(targets, OUT_DIR, cp))
+    log(f"COMPLETE done={done} failed={failed} remaining={remaining} "
+        f"stop={stop_reason} {time.time()-t0:.0f}s")
+    print(json.dumps({"done": done, "failed": failed, "skipped": skipped,
+                      "remaining": remaining, "stopReason": stop_reason,
+                      "names": len(names), "totalCalls": cp.data["totalCalls"],
+                      "outDir": str(OUT_DIR)}, ensure_ascii=False))
     return 0
 
 

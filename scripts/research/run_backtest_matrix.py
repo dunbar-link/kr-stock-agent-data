@@ -107,26 +107,55 @@ def main(argv=None) -> int:
                          "top1": ranked[0]["ticker"] if ranked else None})
         out = {"meta": meta, "coverage": rows}
     elif args.mode == "selftest":
-        # 결정성 + point-in-time 위생 검사(네트워크 0, 같은 입력 → 같은 출력)
+        # 코드 결함과 데이터 부족을 **구분**한다.
+        #   랭킹이 비는 것은 1999~2006 구간의 BPS 결손 때문이지 코드 버그가 아니다(데이터 문서와 일치).
+        #   그래서 코드 검사는 '유효한 fundamental 이 있는 스냅샷'으로 하고,
+        #   데이터 적합성은 별도 판정(WAIT_INSUFFICIENT_DATA)으로 낸다.
         checks = []
+        usable = [d for d in all_dates if len(rank_universe(snaps[d], names)) > 0]
+        meta["usableSnapshots"] = len(usable)
+        meta["usableFirst"] = usable[0] if usable else None
+        meta["usableLast"] = usable[-1] if usable else None
+        usable_span = contiguous_span(usable)
+        meta["usableContiguousMonths"] = len(usable_span)
+
+        if usable:
+            probe = usable[-1]
+            r0 = rank_universe(snaps[probe], names)
+            checks.append({"check": "ranking_nonempty", "pass": len(r0) > 0,
+                           "n": len(r0), "probeDate": probe})
+            checks.append({"check": "ranking_deterministic",
+                           "pass": [x["ticker"] for x in r0] ==
+                                   [x["ticker"] for x in rank_universe(snaps[probe], names)]})
+            checks.append({"check": "no_unlisted_ticker_in_rank",
+                           "pass": all(t["ticker"] in snaps[probe] for t in r0)})
+            checks.append({"check": "combined_rank_is_sum",
+                           "pass": all(t["combinedRank"] == t["profitabilityRank"] + t["valueRank"]
+                                       for t in r0)})
+        else:
+            checks.append({"check": "ranking_nonempty", "pass": False,
+                           "note": "유효 fundamental 스냅샷 0 — 데이터 문제"})
+
         if len(dates) >= 15:
             a = run_backtest(snaps, names, dates=dates, hold_months=12, n_stocks=20)
             b = run_backtest(snaps, names, dates=dates, hold_months=12, n_stocks=20)
             checks.append({"check": "deterministic",
                            "pass": bool(a and b and a["navSeries"] == b["navSeries"])})
-            r0 = rank_universe(snaps[dates[0]], names)
-            checks.append({"check": "ranking_nonempty", "pass": len(r0) > 0, "n": len(r0)})
-            checks.append({"check": "no_future_ticker_in_first_rank",
-                           "pass": all(t["ticker"] in snaps[dates[0]] for t in r0[:20])})
-            ev = evaluate(a) if a else None
-            checks.append({"check": "evaluate_ok", "pass": ev is not None})
+            checks.append({"check": "evaluate_ok", "pass": evaluate(a) is not None if a else False})
             checks.append({"check": "nav_positive",
                            "pass": bool(a and all(x["nav"] > 0 for x in a["navSeries"]))})
-        else:
-            checks.append({"check": "enough_snapshots", "pass": False,
-                           "note": f"contiguous months={len(dates)} (<15)"})
+
+        code_ok = all(c.get("pass") for c in checks)
+        # 연구를 실제로 돌리려면 '유효 데이터가 연속 24개월 이상' 필요하다.
+        data_ok = len(usable_span) >= 24
         out = {"meta": meta, "selftest": checks,
-               "verdict": "PASS" if all(c.get("pass") for c in checks) else "FAIL"}
+               "codeVerdict": "PASS" if code_ok else "FAIL",
+               "dataVerdict": "READY" if data_ok else "WAIT_INSUFFICIENT_DATA",
+               "dataNote": (f"유효 연속구간 {len(usable_span)}개월 (<24) — "
+                            f"1999~2006 은 BPS 결손으로 랭킹 산출 불가(설계대로). "
+                            f"2007-01~2026-08 수집이 끝나야 baseline/matrix/robust 실행 가능."),
+               "verdict": "PASS" if (code_ok and data_ok) else
+                          ("WAIT_INSUFFICIENT_DATA" if code_ok else "FAIL")}
     elif args.mode == "baseline":
         rows = []
         # 원전에 가장 가까운 기준선: 20종목 · 12개월 보유 · 거치식 연 1회 교체

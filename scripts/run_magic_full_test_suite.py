@@ -37,6 +37,7 @@ FULL_SUITE = [
     "test_magic_publish_public.py",
     "test_magic_live_verify.py",
     "test_magic_backup.py",
+    "test_magic_auto_apply_catchup.py",
 ]
 
 _SUMMARY_RE = re.compile(r"(\d+)\s*passed,\s*(\d+)\s*failed")

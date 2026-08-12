@@ -585,6 +585,118 @@ def run_auto_apply(*, today_iso: str | None = None, canonical_path: Path | None 
         release_lock(lock_path)
 
 
+# ── backlog catch-up (WABABA-AUTO-APPLY-BACKLOG-CATCHUP-R1) ────────────────────
+# 왜 필요한가(2026-08-12 실측): run_auto_apply 는 "1회 = 가장 오래된 미반영 1건"이다(안전 규칙,
+#   순서 역전·일괄 적용 금지). 그런데 백로그가 1일 쌓이면 매일 16:25 가 *어제* 1건을 소진하는
+#   동안 *오늘* 1건이 새로 쌓여 **백로그가 영원히 1로 고정**된다. 그러면 17:00 publish gate 의
+#   canonicalLatestIsToday 가 매일 실패한다(BLOCKED_CANONICAL_LEDGER_BEHIND).
+#   실측 근거: 08-12 16:25 실행이 target=2026-08-11 로 성공하고 remainingPendingDates=["2026-08-12"].
+#
+# 설계: 단일 날짜 계약(run_auto_apply)은 **그대로 둔다**. 그 위에 얇은 순차 반복만 얹는다.
+#   - 새 scheduler/daemon/queue 없음. canonical 직접 편집 없음. apply 경로 복제·우회 없음.
+#   - 상태 재조회는 run_auto_apply 가 매 호출마다 canonical 을 다시 읽어 수행한다(별도 캐시 없음).
+#   - 성공이 아니면 즉시 중단하고 그 결과의 reason/founderAction 을 보존한다.
+#   - 부분 성공을 숨기지 않는다: appliedDates / remainingPendingDates 로 남긴다.
+# loop safety 3중:
+#   ① 하드 상한 CATCHUP_MAX_ITERATIONS
+#   ② 데이터 기반 상한 — 매 반복마다 limit 을 (지금까지 횟수 + 남은 pending 수)로 다시 좁힌다
+#   ③ 전진 검증 — target 날짜가 실제로 전진(오름차순·중복 0)하고 seq 가 증가해야 한다.
+#      하나라도 어기면 BLOCKED_CATCHUP_NO_PROGRESS 로 즉시 중단(무한루프·중복 적용 원천 차단).
+CATCHUP_MAX_ITERATIONS = 40
+BLOCKED_CATCHUP_NO_PROGRESS = "BLOCKED_CATCHUP_NO_PROGRESS"
+BLOCKED_CATCHUP_MAX_ITERATIONS = "BLOCKED_CATCHUP_MAX_ITERATIONS"
+
+
+def _catchup_stop_info(r: dict) -> dict:
+    """중단시킨 반복의 사유를 원형 그대로 보존(정보 삭제 0)."""
+    return {"status": r.get("status"), "verdict": r.get("verdict"),
+            "targetExecutionDate": r.get("targetExecutionDate"),
+            "blockedCodes": list(r.get("blockedCodes") or []),
+            "reason": r.get("reason"), "founderAction": r.get("founderAction")}
+
+
+def _catchup_finalize(base: dict, applied: list, iterations: int, stopped: dict | None = None) -> dict:
+    out = dict(base or {})
+    out["appliedDates"] = list(applied)
+    out["catchupIterations"] = int(iterations)
+    if stopped is not None:
+        out["catchupStopped"] = stopped
+    return out
+
+
+def run_auto_apply_catchup(*, max_iterations: int | None = None, run_once_fn=None, **kwargs) -> dict:
+    """처리 가능한 미반영 거래일을 오래된 순서대로 연속 반영한다(1회 실행으로 backlog 해소).
+
+    반환 스키마는 단일 실행과 **동일**하고 appliedDates·catchupIterations(필요시 catchupStopped)만
+    더한다 — 08:40 종합보고·publish gate 계약 비회귀.
+    run_once_fn 은 테스트 주입용(기본 run_auto_apply). 기존 rederive_fn 주입과 같은 방식.
+    """
+    runner = run_once_fn or run_auto_apply
+    hard_cap = int(max_iterations) if max_iterations else CATCHUP_MAX_ITERATIONS
+    hard_cap = max(1, min(hard_cap, CATCHUP_MAX_ITERATIONS))
+
+    applied: list = []
+    seen: set = set()
+    last_applied: dict | None = None
+    prev_target = ""
+    prev_seq = None
+    limit = hard_cap
+    i = 0
+
+    while i < limit:
+        i += 1
+        r = runner(**kwargs) or {}
+        status = str(r.get("status") or "")
+
+        if status != APPLIED_AUTOMATICALLY:
+            # 아직 한 건도 못 붙였으면 단일 실행과 완전히 동일하게 그 결과를 그대로 낸다(비회귀).
+            if last_applied is None:
+                return _catchup_finalize(r, applied, i)
+            # 이미 붙인 게 있는데 "다음 날짜가 아직 준비 안 됨"이면 그건 정상 대기다.
+            # 성공분을 BLOCKED 로 덮지 않고 중단 사유만 남긴다(당일 데이터 미준비 = 강제 적용 금지).
+            if status == SKIPPED_NOT_READY:
+                return _catchup_finalize(last_applied, applied, i, stopped=_catchup_stop_info(r))
+            # 그 밖의 실패(게이트 실패·사후검증 실패·lock·canonical 불일치)는 그대로 노출한다.
+            return _catchup_finalize(r, applied, i, stopped=_catchup_stop_info(r))
+
+        target = str(r.get("targetExecutionDate") or "")
+        seq = r.get("officialSequence")
+        no_progress = (
+            not target
+            or target in seen
+            or target <= prev_target
+            or (prev_seq is not None and seq is not None and int(seq) <= int(prev_seq))
+        )
+        if no_progress:
+            blocked = _base_result(
+                BLOCKED_CATCHUP_NO_PROGRESS, verdict="BLOCKED", now=C.now_kst().isoformat(),
+                date=r.get("date"), targetExecutionDate=target,
+                canonicalChanged=bool(applied), blockedCodes=[BLOCKED_CATCHUP_NO_PROGRESS],
+                remainingPendingDates=list(r.get("remainingPendingDates") or []),
+                reason=f"catch-up 전진 실패 — target={target or '없음'} 이 직전({prev_target or '없음'})보다 "
+                       f"전진하지 않음. 중복 적용 방지를 위해 즉시 중단",
+                founderAction="canonical 미반영일 계산과 apply 결과 대조 필요(자동 재시도 금지)")
+            return _catchup_finalize(blocked, applied, i)
+
+        seen.add(target)
+        applied.append(target)
+        last_applied = r
+        prev_target = target
+        if seq is not None:
+            prev_seq = int(seq)
+
+        remaining = list(r.get("remainingPendingDates") or [])
+        if not remaining:
+            return _catchup_finalize(r, applied, i)
+        # ② 데이터 기반 상한 — 남은 pending 수 이상은 절대 돌지 않는다.
+        limit = min(hard_cap, i + len(remaining))
+
+    stopped = {"status": BLOCKED_CATCHUP_MAX_ITERATIONS,
+               "reason": f"catch-up 반복 상한({limit}) 도달 — 남은 미반영은 다음 주기에서 처리",
+               "founderAction": "미반영 잔여가 계속 줄지 않으면 파이프라인 점검"}
+    return _catchup_finalize(last_applied or {}, applied, i, stopped=stopped)
+
+
 def _run_script(script_name: str, args: list) -> dict:
     """저장소의 기존 검증된 CLI 를 그대로 호출한다(apply/ticket 로직 복제·우회 0)."""
     cmd = [sys.executable, str(Path(__file__).with_name(script_name)), *args]
@@ -649,6 +761,13 @@ def write_durable_status(result: dict, *, json_path: Path | None = None,
         L.append(f"- 총 lot: {result.get('itemLots')}")
     if result.get("blockedCodes"):
         L.append(f"- 차단 사유: {', '.join(result['blockedCodes'])}")
+    # catch-up 으로 여러 거래일을 한 번에 붙였으면 그 사실을 숨기지 않는다(부분 성공 포함).
+    _ad = result.get("appliedDates")
+    if _ad:
+        L.append(f"- 이번 실행 반영: {len(_ad)}건 ({', '.join(_ad)})")
+    _cs = result.get("catchupStopped")
+    if _cs:
+        L.append(f"- catch-up 중단: {_cs.get('status')} — {_cs.get('reason')}")
     L += [f"- 미반영 잔여: {len(result.get('remainingPendingDates') or [])}건",
           f"- 실주문 {result.get('realOrderCount', 0)} · 브로커 {result.get('brokerApiCallCount', 0)} · "
           f"SMTP {result.get('smtpCallCount', 0)} · public {result.get('publicCopyCount', 0)}",
@@ -659,22 +778,34 @@ def write_durable_status(result: dict, *, json_path: Path | None = None,
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        description="마법공식 가상 장부 무인 자동 반영(1회 실행 = 최대 1거래일, 실주문 없음)")
+        description="마법공식 가상 장부 무인 자동 반영(미반영 거래일을 오래된 순서대로 연속 반영, 실주문 없음)")
     ap.add_argument("--date", default=None, help="기준일 YYYY-MM-DD (생략 시 오늘 KST)")
     ap.add_argument("--dry-run", action="store_true", help="게이트까지만 평가(장부 write 0)")
+    ap.add_argument("--no-catchup", action="store_true",
+                    help="backlog catch-up 없이 가장 오래된 1건만 처리(구 동작)")
+    ap.add_argument("--max-catchup", type=int, default=None,
+                    help=f"catch-up 반복 상한(기본·최대 {CATCHUP_MAX_ITERATIONS})")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
-    r = run_auto_apply(today_iso=args.date, do_apply=not args.dry_run)
+    # --dry-run 은 장부를 바꾸지 않으므로 반복하면 같은 날짜를 무한 재평가하게 된다 → 항상 1회.
+    if args.dry_run or args.no_catchup:
+        r = run_auto_apply(today_iso=args.date, do_apply=not args.dry_run)
+    else:
+        r = run_auto_apply_catchup(today_iso=args.date, do_apply=True,
+                                   max_iterations=args.max_catchup)
     C.write_json_report(C.REPORTS_DIR / f"auto-apply-{args.date or C.today_kst_iso()}.json", r)
     if not args.dry_run:
         write_durable_status(r)
     if args.json:
         print(json.dumps(r, ensure_ascii=False, indent=2))
     else:
+        ad = r.get("appliedDates")
+        extra = f" applied={len(ad)}건{'(' + ', '.join(ad) + ')' if ad else ''}" if ad is not None else ""
         print(f"[AUTO_APPLY {r.get('date')}] status={r['status']} verdict={r['verdict']} "
               f"target={r.get('targetExecutionDate')} canonicalChanged={r.get('canonicalChanged')} "
-              f"founderNotified={r.get('founderNotified')}")
+              f"founderNotified={r.get('founderNotified')}{extra} "
+              f"remaining={len(r.get('remainingPendingDates') or [])}")
     return 0 if r["verdict"] == "PASS" else 2
 
 

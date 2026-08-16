@@ -86,6 +86,8 @@ _PUBLIC_TOP_ALLOW = {
     "magicFundPolicy", "magicFormula",
     # Phase 45-E8.1: OFFICIAL 장부 public 매핑(additive; PILOT 5키와 분리)
     "magicOfficialSummary", "magicOfficialPortfolio", "magicOfficialTradeDays",
+    # WABABA-PUBLIC-FUND-KOSPI-WEBSITE-R1: KOSPI 벤치마크 비교(canonical 파생, additive 4번째 키)
+    "magicOfficialBenchmark",
     # UI 개선 2차: 성과분석 "넘긴 종목" 카운트가 배포에서도 맞도록 제외 코드 목록 공개(코드 배열만, 민감정보 없음).
     "reviewedCandidateCodes",
 }
@@ -344,13 +346,41 @@ def build_magic_public_summary():
     }
 
 
+def _benchmark_enabled(explicit=None) -> bool:
+    """KOSPI 벤치마크를 public 에 실을지. **기본 OFF**.
+
+    왜 기본 OFF 인가(WABABA-KOSPI-BENCHMARK-R1 §11-1): 이 환경의 지수 피드는 일간 |변동률|
+    중앙값 3.56%·최대 17.91% 로 실제 종합지수처럼 움직이지 않는다. 수집 경로는 검증됐지만
+    원천 성격이 확인되기 전에 초과수익률을 공개하면 오해를 만든다.
+    → 피드 확인 후 WABABA_PUBLIC_BENCHMARK=1 로 켠다(코드 변경 없이 전환).
+    """
+    if explicit is not None:
+        return bool(explicit)
+    return str(os.environ.get("WABABA_PUBLIC_BENCHMARK", "")).strip() in ("1", "true", "TRUE", "yes")
+
+
+def _build_official_benchmark(state_path, warn):
+    """벤치마크 계산(fail-open). 실패해도 public 3키 생성은 절대 막지 않는다."""
+    try:
+        import kospi_benchmark as _kb
+        st = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        return _kb.build_fund_benchmark(st)
+    except Exception as e:  # noqa: BLE001
+        if warn:
+            warn(f"[WARN] KOSPI 벤치마크 스킵(공개 3키 영향 없음): {type(e).__name__}: {e}")
+        return None
+
+
 def apply_magic_official_public(enriched, *, state_path=OFFICIAL_STATE_PATH,
-                                existing_public=None, warn=print):
+                                existing_public=None, warn=print, include_benchmark=None):
     """OFFICIAL canonical → public 3키를 additive merge. 실패해도 2펀드/legacy 생성은 계속(격리).
-    실패 시 기존 public의 last-known-good magicOfficial* 키를 보존한다. 파일 쓰기 0."""
+    실패 시 기존 public의 last-known-good magicOfficial* 키를 보존한다. 파일 쓰기 0.
+
+    include_benchmark: None=환경변수(기본 OFF) / True·False=명시. 켜져 있어도 계산 실패는 fail-open.
+    """
     try:
         from build_magic_official_public import (build_magic_official_public as _bmop,
-                                                 OFFICIAL_PUBLIC_KEYS)
+                                                 OFFICIAL_PUBLIC_KEYS, OFFICIAL_BENCHMARK_KEY)
     except Exception as e:  # noqa: BLE001
         if warn:
             warn(f"[WARN] magicOfficial mapping import 실패(스킵): {type(e).__name__}: {e}")
@@ -358,9 +388,12 @@ def apply_magic_official_public(enriched, *, state_path=OFFICIAL_STATE_PATH,
     try:
         if not Path(state_path).exists():
             raise FileNotFoundError(str(state_path))
-        official = _bmop(state_path)
+        bench = _build_official_benchmark(state_path, warn) if _benchmark_enabled(include_benchmark) else None
+        official = _bmop(state_path, benchmark=bench)
         for k in OFFICIAL_PUBLIC_KEYS:
             enriched[k] = official[k]
+        if OFFICIAL_BENCHMARK_KEY in official:
+            enriched[OFFICIAL_BENCHMARK_KEY] = official[OFFICIAL_BENCHMARK_KEY]
         if warn:
             warn(f"magicOfficial public 매핑 병합 완료: {state_path}")
     except Exception as e:  # noqa: BLE001

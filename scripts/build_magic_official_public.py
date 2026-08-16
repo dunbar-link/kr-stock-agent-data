@@ -24,6 +24,11 @@ OFFICIAL_STATE_PATH = ROOT / "magic-formula-official-state.json"
 
 PUBLIC_SCHEMA_VERSION = "magic-official-public-v1"
 OFFICIAL_PUBLIC_KEYS = ("magicOfficialSummary", "magicOfficialPortfolio", "magicOfficialTradeDays")
+# WABABA-PUBLIC-FUND-KOSPI-WEBSITE-R1 — 벤치마크는 **선택 4번째 키**(additive).
+#   기존 3키 계약·필드는 그대로 두고, benchmark 를 주입할 때만 붙는다.
+#   ★ 이 모듈은 publish gate(publicModelGate)가 호출하는 순수·offline 매핑이다.
+#     그래서 여기서 지수를 네트워크로 조회하지 않는다 — 호출자가 만들어 주입한다.
+OFFICIAL_BENCHMARK_KEY = "magicOfficialBenchmark"
 OFFICIAL = "OFFICIAL"
 _EPS = 0.5
 
@@ -328,8 +333,53 @@ def build_trade_days(st: dict) -> list:
     return days
 
 
-def build_magic_official_public(state_path=OFFICIAL_STATE_PATH) -> dict:
-    """canonical을 read-only로 읽어 public 3키 dict 반환. 파일 쓰기 0. 검증 실패 시 MappingValidationError."""
+def build_benchmark_public(bench: dict, summary: dict) -> dict:
+    """kospi_benchmark 결과 → public 표시 모델(순수 변환). 네트워크·파일 0.
+
+    - series 는 표시용으로 소수 2자리 반올림한다(내부 원정밀도는 canonical 계층이 보관).
+    - **지수 절대값은 series 에 넣지 않는다** — % 축과 index 축 혼합을 구조적으로 차단.
+    - 계산 실패/결측은 0% 로 위장하지 않고 status 로 드러낸다.
+    """
+    status = str(bench.get("status") or "UNKNOWN")
+    out = {
+        "schemaVersion": "magic-official-benchmark-public-v1",
+        "status": status,
+        "benchmark": bench.get("benchmark"),
+        "benchmarkCode": bench.get("benchmarkCode"),
+        "baseDate": bench.get("baseDate"),
+        "baseDateShifted": bool(bench.get("baseDateShifted")),
+        "requestedBaseDate": bench.get("requestedBaseDate"),
+        "missingPolicy": bench.get("missingPolicy"),
+        "missingBenchmarkDateCount": len(bench.get("missingBenchmarkDates") or []),
+        "series": [],
+        "latest": None,
+    }
+    if status != "OK":
+        out["reason"] = bench.get("reason")
+        return out
+    series = [{"date": r["date"],
+               "fundReturnPct": _r2(r["fundReturnPct"]),
+               "benchmarkReturnPct": _r2(r["benchmarkReturnPct"]),
+               "excessReturnPctPoint": _r2(r["excessReturnPctPoint"])}
+              for r in (bench.get("series") or [])]
+    out["series"] = series
+    if series:
+        last = series[-1]
+        out["latest"] = dict(last)
+        # 공개 요약과 어긋나지 않는지 파생 일관성 확인(펀드 수익률 정의는 하나뿐이어야 한다).
+        cum = summary.get("cumulativeReturn")
+        if cum is not None and abs(float(cum) - last["fundReturnPct"]) > 0.011:
+            raise MappingValidationError(
+                f"benchmark fundReturnPct {last['fundReturnPct']} != summary cumulativeReturn {cum}")
+    return out
+
+
+def build_magic_official_public(state_path=OFFICIAL_STATE_PATH, benchmark: Optional[dict] = None) -> dict:
+    """canonical을 read-only로 읽어 public 3키 dict 반환. 파일 쓰기 0. 검증 실패 시 MappingValidationError.
+
+    benchmark(선택): kospi_benchmark.build_fund_benchmark() 결과. 주면 4번째 키가 additive 로 붙는다.
+      미지정이면 반환 키·값이 기존과 100% 동일하다(publish gate 경로 불변).
+    """
     raw = Path(state_path).read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     st = json.loads(raw.decode("utf-8"))
@@ -341,8 +391,11 @@ def build_magic_official_public(state_path=OFFICIAL_STATE_PATH) -> dict:
     if not _close(agg, summary["holdingsMarketValue"]):
         raise MappingValidationError(f"portfolio marketValue sum {agg} != holdingsMarketValue {summary['holdingsMarketValue']}")
     trade_days = build_trade_days(st)
-    return {"magicOfficialSummary": summary, "magicOfficialPortfolio": portfolio,
-            "magicOfficialTradeDays": trade_days}
+    out = {"magicOfficialSummary": summary, "magicOfficialPortfolio": portfolio,
+           "magicOfficialTradeDays": trade_days}
+    if benchmark is not None:
+        out[OFFICIAL_BENCHMARK_KEY] = build_benchmark_public(benchmark, summary)
+    return out
 
 
 # ===== CLI preview (stdout only; 파일 쓰기 0) =====

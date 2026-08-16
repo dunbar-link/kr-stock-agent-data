@@ -39,6 +39,7 @@ FULL_SUITE = [
     "test_magic_backup.py",
     "test_magic_auto_apply_catchup.py",
     "test_magic_execution_profile.py",
+    "test_kospi_benchmark.py",
 ]
 
 _SUMMARY_RE = re.compile(r"(\d+)\s*passed,\s*(\d+)\s*failed")

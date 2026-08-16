@@ -8,7 +8,8 @@
 #   ③ 파생 일관성 — benchmark 의 fundReturnPct 최신값 == 기존 magicOfficialSummary.cumulativeReturn
 #   ④ 지수 절대값이 series 에 섞이지 않음(% 축 오염 방지)
 #   ⑤ 실패/결측을 0% 로 위장하지 않음
-#   ⑥ 기본 OFF — 지수 피드 확인 전 자동 공개 금지(WABABA_PUBLIC_BENCHMARK 로만 켠다)
+#   ⑥ 기본 ON — 지수 피드 실지수 확인 완료(WABABA-PUBLIC-BENCHMARK-UI-R1).
+#      WABABA_PUBLIC_BENCHMARK=0 은 비상 차단용으로만 남긴다.
 #
 # 방식: 순수 함수 + fixture. 네트워크 0, 파일 write 0.
 # 사용: python scripts\test_public_benchmark_contract.py
@@ -122,10 +123,10 @@ print("[3] writer 배선 · allowlist")
 check("3-1 allowlist 기존 3키 유지", set(M.OFFICIAL_PUBLIC_KEYS) <= H._PUBLIC_TOP_ALLOW, True)
 check("3-2 allowlist 에 benchmark 키 추가", M.OFFICIAL_BENCHMARK_KEY in H._PUBLIC_TOP_ALLOW, True)
 
-# 기본 OFF (지수 피드 확인 전 자동 공개 금지)
+# 기본 ON (피드 실지수 확인 완료). env=0 은 비상 차단용.
 _env_before = os.environ.pop("WABABA_PUBLIC_BENCHMARK", None)
 try:
-    check("3-3 기본은 OFF", H._benchmark_enabled(), False)
+    check("3-3 기본은 ON(피드 실지수 확인 완료)", H._benchmark_enabled(), True)
     os.environ["WABABA_PUBLIC_BENCHMARK"] = "1"
     check("3-4 env=1 이면 ON", H._benchmark_enabled(), True)
     os.environ["WABABA_PUBLIC_BENCHMARK"] = "0"

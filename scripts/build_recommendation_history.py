@@ -347,16 +347,22 @@ def build_magic_public_summary():
 
 
 def _benchmark_enabled(explicit=None) -> bool:
-    """KOSPI 벤치마크를 public 에 실을지. **기본 OFF**.
+    """KOSPI 벤치마크를 public 에 실을지. **기본 ON** (WABABA-PUBLIC-BENCHMARK-UI-R1).
 
-    왜 기본 OFF 인가(WABABA-KOSPI-BENCHMARK-R1 §11-1): 이 환경의 지수 피드는 일간 |변동률|
-    중앙값 3.56%·최대 17.91% 로 실제 종합지수처럼 움직이지 않는다. 수집 경로는 검증됐지만
-    원천 성격이 확인되기 전에 초과수익률을 공개하면 오해를 만든다.
-    → 피드 확인 후 WABABA_PUBLIC_BENCHMARK=1 로 켠다(코드 변경 없이 전환).
+    이력: WABABA-KOSPI-BENCHMARK-R1 §11-1 에서 지수 피드가 실지수인지 미확인이라 기본 OFF 로
+    닫아뒀다. 이후 Founder 외부 교차검증으로 **실지수 확인 완료**
+    (2026-06-17 close 8,864.24 / 2026-08-14 close 6,977.94 / 구간 -21.28%,
+     현 파이프라인 산출과 일치) → 게이트의 목적이 끝났으므로 기본 ON 으로 전환한다.
+
+    env 신규 의존을 만들지 않기 위해 기본값을 코드로 켠다. WABABA_PUBLIC_BENCHMARK 는
+    **비상 차단용(=0)** 으로만 남긴다(운영 중 지수 공급 장애 시 코드 배포 없이 끌 수 있게).
     """
     if explicit is not None:
         return bool(explicit)
-    return str(os.environ.get("WABABA_PUBLIC_BENCHMARK", "")).strip() in ("1", "true", "TRUE", "yes")
+    raw = str(os.environ.get("WABABA_PUBLIC_BENCHMARK", "")).strip()
+    if raw in ("0", "false", "FALSE", "no"):
+        return False
+    return True
 
 
 def _build_official_benchmark(state_path, warn):

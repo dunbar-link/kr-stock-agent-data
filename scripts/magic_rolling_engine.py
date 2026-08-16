@@ -23,7 +23,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import date as _date, datetime, timedelta
 from typing import Optional
 
 # ----- 상수 -----
@@ -56,6 +56,73 @@ PILOT_RUN = "PILOT"
 
 SELL_REASON_ROLLOVER = "FIFTY_BATCH_FIFO_ROLLOVER"
 RANK_FIELDS = ("rank", "combinedRank", "profitabilityRank", "valueRank", "returnOnCapital", "earningsYield")
+
+# ----- 실행 프로파일 (WABABA-MAGIC-FORMULA-EXECUTION-PROFILE-R1) -----
+# 왜: 같은 마법공식 종목선정을 유지한 채 *실행 방식만* 다른 펀드(CORE/EASY)를 굴리기 위해서다.
+#     엔진을 복제하면 두 벌의 매매 로직이 생겨 검증이 갈라진다 → 복제 금지, 프로파일 주입으로 푼다.
+# 계약(동결 보호):
+#   - profile 인자를 주지 않으면 아래 CORE_PROFILE(=기존 모듈 상수)로 해석된다.
+#     즉 **기존 호출부는 한 곳도 바꾸지 않아도 동작·결과가 완전히 동일**하다.
+#   - CORE 값은 상수를 재입력하지 않고 그대로 참조한다(정본 1곳 유지).
+CADENCE_DAILY = "DAILY"                                   # 매 거래일 신규 batch (기존 Core)
+CADENCE_WEEKLY_FIRST = "WEEKLY_FIRST_TRADING_DAY"         # 매주 첫 실제 거래일에만 신규 batch
+CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY_FIRST)
+
+# cadence 상 신규 batch 를 시작하지 않는 거래일의 runStatus.
+# 휴장(NON_TRADING_DAY)과 구분한다 — 개장은 했고 보유는 유지되며 거래일 index 는 전진한다.
+CADENCE_NON_BUY_DAY = "CADENCE_NON_BUY_DAY"
+
+CORE_PROFILE = {
+    "profileId": "CORE",
+    "cadence": CADENCE_DAILY,
+    "topN": TOP_N,
+    "holdTradingDays": HOLD_TRADING_DAYS,
+    "maxOpenBatches": MAX_OPEN_BATCHES,
+    "batchCapital": INITIAL_BATCH_CAPITAL,
+}
+
+
+def resolve_execution_profile(profile: Optional[dict] = None) -> dict:
+    """profile(부분 dict) → 완전한 프로파일. None/빈 값이면 CORE(기존 상수)와 동일.
+
+    None 값 키는 무시한다(부분 override 만 하고 나머지는 Core 기본값 유지).
+    """
+    p = dict(CORE_PROFILE)
+    if profile:
+        for k, v in dict(profile).items():
+            if v is not None:
+                p[k] = v
+    if p["cadence"] not in CADENCES:
+        raise ValueError(f"unknown cadence: {p['cadence']!r} (allowed: {CADENCES})")
+    for k in ("topN", "holdTradingDays"):
+        if int(p[k]) < 1:
+            raise ValueError(f"{k} must be >= 1 (got {p[k]!r})")
+    return p
+
+
+def is_batch_start_day(date: str, calendar: Optional[dict], profile: Optional[dict] = None) -> bool:
+    """이 거래일에 *신규 batch 를 시작하는가*. 순수 함수(파일 I/O·네트워크 0).
+
+    DAILY  : 항상 True → 기존 Core 동작 불변(분기 자체가 발생하지 않는다).
+    WEEKLY_FIRST_TRADING_DAY : 같은 ISO 주(월~일)에서 **가장 이른 실제 거래일**만 True.
+      → 월요일이 휴장이면 그 주의 첫 실제 거래일(화/수…)이 자동으로 선택된다.
+        거래일 판정은 기존 calendar/classify_trading_day 를 그대로 재사용한다(새 캘린더 로직 0).
+        미래 데이터를 보지 않는다 — 같은 주의 *이전* 날짜만 조회한다.
+    """
+    prof = resolve_execution_profile(profile)
+    if prof["cadence"] == CADENCE_DAILY:
+        return True
+    if classify_trading_day(date, calendar) != "TRADING":
+        return False
+    if prof["cadence"] == CADENCE_WEEKLY_FIRST:
+        d = _date.fromisoformat(str(date)[:10])
+        trading_days = calendar["tradingDays"]
+        monday = d - timedelta(days=d.weekday())
+        for i in range(d.weekday()):          # 같은 주의 '이전' 날짜만 (look-ahead 0)
+            if (monday + timedelta(days=i)).isoformat() in trading_days:
+                return False
+        return True
+    raise ValueError(f"unknown cadence: {prof['cadence']!r}")
 
 
 def _now() -> str:
@@ -147,15 +214,18 @@ def _official_open_batches(state: dict) -> list:
                   key=lambda b: b.get("sequence", 0))
 
 
-def due_official_batches(state: dict, current_trading_day_index: int) -> list:
+def due_official_batches(state: dict, current_trading_day_index: int,
+                         profile: Optional[dict] = None) -> list:
     """45-E10: 매도 예정 거래일 index가 현재 거래일 index 이하인 open 공식 batch(FIFO=오래된 순).
-    plannedSellTradingDayIndex 누락 batch는 buyTradingDayIndex(또는 sequence) + HOLD_TRADING_DAYS로 보정."""
+    plannedSellTradingDayIndex 누락 batch는 buyTradingDayIndex(또는 sequence) + holdTradingDays로 보정.
+    profile 미지정 → HOLD_TRADING_DAYS(기존과 동일)."""
+    hold = resolve_execution_profile(profile)["holdTradingDays"]
     out = []
     for b in _official_open_batches(state):
         psi = b.get("plannedSellTradingDayIndex")
         if psi is None:
             base = b.get("buyTradingDayIndex", b.get("sequence", 0))
-            psi = base + HOLD_TRADING_DAYS
+            psi = base + hold
         if psi <= current_trading_day_index:
             out.append(b)
     return sorted(out, key=lambda b: (b.get("buyTradingDayIndex", b.get("sequence", 0)), b.get("sequence", 0)))
@@ -170,12 +240,13 @@ def fund_cash(state: dict) -> float:
 
 # ----- 정수 수량 배분(결정적) -----
 
-def allocate_quantities(top10: list, open_prices: dict, allocated_capital: float):
-    """rule 4: targetPerStock=allocated/10, qty=max(1,floor(target/open)).
+def allocate_quantities(top10: list, open_prices: dict, allocated_capital: float,
+                        profile: Optional[dict] = None):
+    """rule 4: targetPerStock=allocated/topN, qty=max(1,floor(target/open)). profile 미지정 → TOP_N.
     총액이 allocated 초과 시 qty>1 종목 중 '목표 대비 초과액 큰 종목'부터 결정적으로 1주씩 감소(최소 1주 유지).
     모두 최소 1주인데도 초과면 (None, total) 반환 → BLOCKED_INSUFFICIENT_BATCH_BUDGET.
     동일 입력 → 동일 결과(결정성)."""
-    target = allocated_capital / TOP_N
+    target = allocated_capital / resolve_execution_profile(profile)["topN"]
     qty = {}
     for r in top10:
         op = float(open_prices[r["code"]])
@@ -265,8 +336,14 @@ def _blocked(date, status, reason, now, extra=None) -> dict:
 
 def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_prices: dict,
                       calendar: Optional[dict], now: Optional[str] = None,
-                      timing: Optional[dict] = None, trading_day_index: Optional[int] = None):
+                      timing: Optional[dict] = None, trading_day_index: Optional[int] = None,
+                      profile: Optional[dict] = None):
     """순수 함수. (새 state, day_result) 반환. 입력 state 불변(deepcopy). 파일 I/O 0.
+
+    profile(선택, WABABA-MAGIC-FORMULA-EXECUTION-PROFILE-R1): 실행 프로파일.
+      **미지정이면 CORE(기존 모듈 상수)** — 기존 호출부는 결과가 완전히 동일하다.
+      cadence 가 DAILY 가 아니면 '신규 batch 를 시작하지 않는 거래일'이 생긴다(CADENCE_NON_BUY_DAY).
+      그 날에도 개장은 했으므로 평가·거래일 index 는 정상 전진하고 보유는 유지된다.
 
     timing(선택): 신호일·체결일 분리 메타데이터를 batch/buyLedger/dailyLedger에 *추가 기록만* 한다.
       look-ahead 검증은 wrapper가 끝낸 뒤 통과한 값만 주입한다(코어는 검증/계산하지 않음).
@@ -278,6 +355,7 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
     now = now or _now()
     open_prices = open_prices or {}
     eval_prices = eval_prices or {}
+    prof = resolve_execution_profile(profile)
 
     # 0) 평가 스냅샷 키 정규화(evaluationSnapshots 표준). canonical 직접입력 호환(KeyError 방지).
     try:
@@ -305,15 +383,35 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
         st["prevTotalAsset"] = ev["totalAsset"]
         return st, led
 
+    # 2-B) cadence — 이 거래일에 신규 batch 를 시작하는가(프로파일).
+    #      DAILY 는 항상 True 이므로 이 분기는 **Core 에서 절대 발생하지 않는다**(동작 불변).
+    #      비매수 거래일: 개장했으므로 평가·KRX 캘린더·거래일 index 는 전진시키고,
+    #      officialSequence / officialExecutionCalendar / 매매 원장은 손대지 않는다.
+    #      (만기 도래 batch 의 매도는 Core 와 동일하게 '매수와 원자적으로' 처리되므로
+    #       다음 매수일로 이월된다 — 보유기간이 hold 이상으로 늘 수는 있어도 미기록 매도는 없다.)
+    if not is_batch_start_day(date, calendar, prof):
+        cur_idx = trading_day_index if trading_day_index is not None else st.get("officialTradingDayIndex", 0) + 1
+        ev = evaluate(st, date, eval_prices)
+        if date not in st.setdefault("officialKrxTradingCalendar", []):
+            st["officialKrxTradingCalendar"].append(date)
+        st["officialTradingDayIndex"] = cur_idx
+        led = _daily_ledger(st, date, True, CADENCE_NON_BUY_DAY,
+                            f"cadence={prof['cadence']} — 신규 batch 미개시(보유 유지)",
+                            eval_info=ev, now=now)
+        st["dailyLedger"].append(led)
+        st["evaluationSnapshots"].append(ev)
+        st["prevTotalAsset"] = ev["totalAsset"]
+        return st, led
+
     # 3) ranking
-    if not ranking or len(ranking) < TOP_N:
+    if not ranking or len(ranking) < prof["topN"]:
         return st, _blocked(date, BLOCKED_MISSING_RANKING, "ranking missing or <10", now)
-    top10 = ranking[:TOP_N]
+    top10 = ranking[:prof["topN"]]
 
     # 4) 교체 여부 — 45-E10: 실제 KRX 거래일 index 기준(open batch 수/officialSequence 기준 아님).
     #    현재 거래일 index = 주입값 또는 (직전 index+1). 누락일은 외부 recorder가 index를 올려둠.
     current_index = trading_day_index if trading_day_index is not None else st.get("officialTradingDayIndex", 0) + 1
-    due = due_official_batches(st, current_index)
+    due = due_official_batches(st, current_index, profile=prof)
     if len(due) >= 2:   # 2개 이상 overdue → 자동 일괄매도 금지(별도 복구 승인)
         return st, _blocked(date, BLOCKED_MULTIPLE_OVERDUE_BATCHES,
                             f"{len(due)} batches overdue at tradingDayIndex {current_index}: "
@@ -342,7 +440,7 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
         allocated = float(st["initialBatchCapital"])
 
     # 7) 정수 수량 배분(allocated 내). 최소1주 합도 초과면 BLOCKED(원자성: 매도 0).
-    qty_map, total_invested = allocate_quantities(top10, open_prices, allocated)
+    qty_map, total_invested = allocate_quantities(top10, open_prices, allocated, profile=prof)
     if qty_map is None:
         return st, _blocked(date, BLOCKED_INSUFFICIENT_BATCH_BUDGET,
                             f"min 1-share total {total_invested} > allocatedCapital {round(allocated,2)}", now,
@@ -405,7 +503,7 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
             "buyDate": date, "buyOpenPrice": op, "quantity": q, "investedAmount": inv,
             "rankSnapshot": rank_snap, "buySequence": seq, "status": "OPEN", "priceSource": PRICE_SOURCE_TRADE,
             "buyTradingDayIndex": current_index,
-            "plannedSellTradingDayIndex": current_index + HOLD_TRADING_DAYS,
+            "plannedSellTradingDayIndex": current_index + prof["holdTradingDays"],
         })
         buy_entry = {
             "tradeId": f"BUY-{date}-{r['code']}-{i:02d}", "date": date, "batchId": batch_id,
@@ -432,9 +530,9 @@ def plan_official_day(state: dict, date: str, ranking, open_prices: dict, eval_p
         "cashReserve": cash_reserve,
         "rolloverSourceBatchId": sell_batch_id, "rolloverSaleProceeds": (proceeds if is_rollover else None),
         "rolloverBudget": rollover_budget,
-        "plannedSellSequence": seq + HOLD_TRADING_DAYS,   # [legacy] 보존(매도 판정엔 미사용)
+        "plannedSellSequence": seq + prof["holdTradingDays"],   # [legacy] 보존(매도 판정엔 미사용)
         "buyTradingDayIndex": current_index,
-        "plannedSellTradingDayIndex": current_index + HOLD_TRADING_DAYS,
+        "plannedSellTradingDayIndex": current_index + prof["holdTradingDays"],
         "closedDate": None, "createdAt": now,
     }
     if timing:
@@ -486,11 +584,13 @@ def record_missed_run(date: str, reason: str = "DAILY_PIPELINE_NOT_EXECUTED") ->
 
 # ----- 45-E10: 거래일 index 마이그레이션 + MISSED_RUN 적용(순수 함수, 입력 불변) -----
 
-def migrate_official_state_indices(state: dict) -> dict:
+def migrate_official_state_indices(state: dict, profile: Optional[dict] = None) -> dict:
     """기존 canonical을 거래일 index 모델로 *additive* 마이그레이션(idempotent). 입력 불변(deepcopy 반환).
+    profile 미지정 → HOLD_TRADING_DAYS(기존과 동일).
     - officialTradingDayIndex / officialKrxTradingCalendar / officialExecutionCalendar 보장.
     - 누락 시에만 officialTradingCalendar(=성공일)에서 backfill(누락일 없던 과거이므로 index==sequence).
     - batch/itemLot에 buyTradingDayIndex / plannedSellTradingDayIndex 보강(없을 때만)."""
+    hold = resolve_execution_profile(profile)["holdTradingDays"]
     st = copy.deepcopy(state)
     exec_cal = list(st.get("officialExecutionCalendar") or [])
     if not exec_cal:
@@ -512,12 +612,12 @@ def migrate_official_state_indices(state: dict) -> dict:
         if b.get("buyTradingDayIndex") is None:
             b["buyTradingDayIndex"] = b.get("sequence", 0)
         if b.get("plannedSellTradingDayIndex") is None:
-            b["plannedSellTradingDayIndex"] = b["buyTradingDayIndex"] + HOLD_TRADING_DAYS
+            b["plannedSellTradingDayIndex"] = b["buyTradingDayIndex"] + hold
     for l in st.get("itemLots", []):
         if l.get("buyTradingDayIndex") is None:
             l["buyTradingDayIndex"] = l.get("buySequence", 0)
         if l.get("plannedSellTradingDayIndex") is None:
-            l["plannedSellTradingDayIndex"] = l["buyTradingDayIndex"] + HOLD_TRADING_DAYS
+            l["plannedSellTradingDayIndex"] = l["buyTradingDayIndex"] + hold
     return st
 
 

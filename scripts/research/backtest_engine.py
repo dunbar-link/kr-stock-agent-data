@@ -428,27 +428,169 @@ def evaluate(result, *, monthly_amount=0.0, initial_capital=0.0, contribution="L
     }
 
 
-def benchmark_series(snapshots, dates, names, *, market="COMBINED", min_market_cap=300):
-    """동일가중 시장 포트폴리오(마법공식과 같은 universe 필터, 순위만 안 씀).
-    '복잡한 공식을 쓸 이유가 있었는가'를 판정하는 기준선."""
-    prev, series, idx = None, [], 100.0
-    for d in dates:
+def investable_universe(snap, names, *, market="COMBINED", min_market_cap=300):
+    """t 시점 '살 수 있었던' 종목 집합. 전략 rank_universe 와 **같은 투자가능 조건**을 쓴다
+    (단 순위 산출에 필요한 PER/ROE 유효성은 요구하지 않는다 — benchmark 는 순위를 안 쓰므로)."""
+    out = {}
+    for t, r in snap.items():
+        if market != "COMBINED" and r["market"] != market:
+            continue
+        if not t.endswith("0") or not r["close"] or not r["marketCap"]:
+            continue
+        if r["marketCap"] < min_market_cap * MARKETCAP_WON_PER_UNIT:
+            continue
+        if _excluded_by_name(names.get(t, ""), True, True):
+            continue
+        out[t] = r
+    return out
+
+
+def benchmark_series(snapshots, dates, names, *, market="COMBINED", min_market_cap=300,
+                     weighting="EQUAL", delist_haircut=0.0, cost_bps=0.0, sell_tax_bps=0.0,
+                     rebalance="MONTHLY"):
+    """survivorship-free 시장 benchmark.
+
+    ★ R5 결함 수정 (WABABA-BENCHMARK-SURVIVORSHIP-FIX-AND-STRATEGY-REASSESS-R5)
+    -------------------------------------------------------------------------
+    이전 구현은 월 수익률을 `common = 전월과 당월에 **둘 다 있는** 종목` 으로만 계산했다.
+    그래서 그 달에 상장폐지된 종목의 **마지막 손실이 통째로 사라졌다**.
+    또 시총 하한을 매월 재적용해, 급락으로 하한 아래로 떨어진 종목(=손실 확정분)도
+    그 달 수익률에서 빠졌다. 두 경로 모두 benchmark 를 위로 편향시킨다.
+    전략은 상장폐지·급락 손실을 그대로 먹는데 benchmark 는 안 먹으니 비교가 불공정했다.
+
+    수정 원칙: **전략과 완전히 같은 생존조건**을 적용한다.
+      - 필터(시총·금융/지주·SPAC·우선주)는 **선정 시점에만** 적용한다.
+        선정 후에는 보유 중이므로 시총이 내려가도 강제로 빼지 않는다.
+      - 보유 중 종목이 다음 스냅샷에서 사라지면(상장폐지·거래종료)
+        마지막 관측가 × (1 - delist_haircut) 로 청산한다 — run_backtest 와 동일 규칙.
+      - 현재 살아남은 종목만 남기는 current-universe bias 를 만들지 않는다.
+
+    weighting : EQUAL(동일가중) | CAP(시가총액가중 — 공식 지수 성격에 가까움)
+    rebalance : MONTHLY(매월 재편입) | BUY_HOLD(최초 1회 선정 후 그대로 보유)
+    비용      : 매월 재편입분에만 부과(BUY_HOLD 는 최초 매수 1회분만).
+    """
+    last_price = {}
+    idx = 100.0
+    series = []
+    holdings = None            # {ticker: (기준가, 비중)}
+    cash_weight = 0.0          # 상장폐지 청산분(더 이상 성장하지 않음)
+    delist_events = 0
+    delist_weight = 0.0
+    turnover_sum = 0.0
+
+    for i, d in enumerate(dates):
         snap = snapshots[d]
-        cur = {}
         for t, r in snap.items():
-            if market != "COMBINED" and r["market"] != market:
-                continue
-            if not t.endswith("0") or not r["close"] or not r["marketCap"]:
-                continue
-            if r["marketCap"] < min_market_cap * MARKETCAP_WON_PER_UNIT:
-                continue
-            if _excluded_by_name(names.get(t, ""), True, True):
-                continue
-            cur[t] = r["close"]
-        if prev:
-            common = [t for t in cur if t in prev and prev[t] > 0]
-            if common:
-                idx *= sum(cur[t] / prev[t] for t in common) / len(common)
-        series.append({"date": d, "index": idx})
-        prev = cur
-    return series
+            if r["close"]:
+                last_price[t] = r["close"]
+
+        # ── 1) 지난달 보유분을 이번 달까지 들고 온 수익률 ────────────────────────
+        if holdings is not None:
+            growth = cash_weight          # 청산분은 현금으로 남아 성장률 1.0
+            ended = {}                    # 이번 달 종료 시점 가치(비중 재계산용)
+            liquidated = 0.0
+            for t, (p0, w) in holdings.items():
+                r = snap.get(t)
+                if r and r["close"]:
+                    p1 = r["close"]
+                    ended[t] = (p1, w * (p1 / p0))
+                else:
+                    # 상장폐지/거래종료 — 전략과 동일하게 마지막 관측가에 haircut 적용해 **청산**한다.
+                    #   청산 후에는 보유목록에서 빼서 현금으로 남긴다.
+                    #   (빼지 않으면 폐지 종목이 매달 다시 '폐지 이벤트'로 세어져 통계가 망가진다)
+                    p1 = (last_price.get(t) or p0) * (1.0 - delist_haircut)
+                    delist_events += 1
+                    delist_weight += w
+                    liquidated += w * (p1 / p0)
+                growth += w * (p1 / p0)
+            idx *= growth
+            if growth > 0:
+                cash_weight = (cash_weight + liquidated) / growth
+                holdings = {t: (px, val / growth) for t, (px, val) in ended.items()}
+            else:
+                cash_weight, holdings = 1.0, {}
+
+        # ── 2) 재편입 ────────────────────────────────────────────────────────────
+        need_select = (holdings is None) or (rebalance == "MONTHLY")
+        if need_select:
+            uni = investable_universe(snap, names, market=market, min_market_cap=min_market_cap)
+            if uni:
+                if weighting == "CAP":
+                    tot = sum(r["marketCap"] for r in uni.values())
+                    new_w = {t: (r["marketCap"] / tot) for t, r in uni.items()} if tot > 0 else {}
+                else:
+                    new_w = {t: 1.0 / len(uni) for t in uni}
+                # 회전율 = 비중 변화 절대값 합 / 2 (편도)
+                if holdings:
+                    keys = set(new_w) | set(holdings)
+                    to = sum(abs(new_w.get(t, 0.0) - holdings.get(t, (0, 0.0))[1]) for t in keys) / 2.0
+                else:
+                    to = 1.0
+                turnover_sum += to
+                if cost_bps or sell_tax_bps:
+                    # 편도 교체분에만 비용. 매도측엔 거래세도 부과(전략과 같은 가정).
+                    idx *= (1.0 - to * (cost_bps + (cost_bps + sell_tax_bps)) / 10000.0)
+                holdings = {t: (uni[t]["close"], w) for t, w in new_w.items()}
+                cash_weight = 0.0          # 재편입 시 청산 현금은 다시 시장에 투입된다
+
+        series.append({"date": d, "index": idx, "positions": len(holdings or {})})
+
+    years = max(1e-9, (_to_ord_bm(dates[-1]) - _to_ord_bm(dates[0])) / 365.25)
+    return {"series": series, "final": idx,
+            "cagr": (idx / 100.0) ** (1.0 / years) - 1.0,
+            "years": years, "delistEvents": delist_events,
+            "delistWeightSum": delist_weight,
+            "turnoverPerYear": turnover_sum / years,
+            "weighting": weighting, "rebalance": rebalance,
+            "market": market, "minMarketCap": min_market_cap,
+            "delistHaircut": delist_haircut,
+            "costBps": cost_bps, "sellTaxBps": sell_tax_bps}
+
+
+def _to_ord_bm(iso):
+    from datetime import date
+    y, m, d = (int(x) for x in iso.split("-"))
+    return date(y, m, d).toordinal()
+
+
+def official_index_series(dates, name="KOSPI", path=None):
+    """공식 KRX 지수(시가총액가중). 자체 동일가중 benchmark 와 **다른 것**이다.
+    지수사업자가 편입/제외를 처리하므로 우리 규칙과 생존조건이 다르다 — 참고용으로만 쓴다."""
+    import json as _json
+    from pathlib import Path as _P
+    p = _P(path) if path else (SNAP_DIR / "_official-index.json")
+    try:
+        raw = _json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    ser = raw.get(name) or {}
+    if not ser:
+        return None
+    keys = sorted(ser)
+    out, base = [], None
+    for d in dates:
+        # 그 날 값이 없으면 그 날 이전 가장 가까운 값(휴장 대응)
+        k = d if d in ser else None
+        if k is None:
+            lo, hi = 0, len(keys) - 1
+            cand = None
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if keys[mid] <= d:
+                    cand = keys[mid]; lo = mid + 1
+                else:
+                    hi = mid - 1
+            k = cand
+        if k is None:
+            continue
+        v = ser[k]
+        if base is None:
+            base = v
+        out.append({"date": d, "index": 100.0 * v / base})
+    if not out or base is None:
+        return None
+    years = max(1e-9, (_to_ord_bm(out[-1]["date"]) - _to_ord_bm(out[0]["date"])) / 365.25)
+    return {"series": out, "final": out[-1]["index"],
+            "cagr": (out[-1]["index"] / 100.0) ** (1.0 / years) - 1.0,
+            "years": years, "source": f"KRX official {name} index (cap-weighted)",
+            "note": "지수사업자 편입/제외 규칙 — 자체 benchmark 와 생존조건이 다르다"}

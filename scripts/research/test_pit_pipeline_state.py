@@ -78,9 +78,13 @@ def t_adequacy_gate():
     ck("실측 스냅샷 수 보고", isinstance(adq["snapshots"], int) and adq["snapshots"] > 0, adq["snapshots"])
     ck("유효 연속구간 계산됨", isinstance(adq["usableContiguousMonths"], int))
     ck("최소요건 24개월", adq["minRequired"] == P.MIN_USABLE_MONTHS == 24)
-    ck("현재는 데이터 부족으로 판정(연구 자동실행 금지)",
-       adq["adequate"] is False, f"usable={adq['usableContiguousMonths']}")
-    ck("유효구간은 2026 스냅샷", adq["usableFirst"] is not None)
+    # 게이트의 '현재 값'이 아니라 '규칙'을 검사한다.
+    #   R3 당시엔 유효 5개월이라 adequate=False 였지만, 수집이 끝난 지금은 True 가 정상이다.
+    #   전이적 데이터 상태를 기대값으로 굳히면 정상 진행이 테스트 실패로 보인다(2026-08-19 실측).
+    ck("충분성 판정이 최소요건 규칙과 일치",
+       adq["adequate"] == (adq["usableContiguousMonths"] >= adq["minRequired"]),
+       f"usable={adq['usableContiguousMonths']} min={adq['minRequired']} adequate={adq['adequate']}")
+    ck("유효구간 경계가 산출됨", adq["usableFirst"] is not None and adq["usableLast"] is not None)
 
 
 def t_status_io(tmp: Path):

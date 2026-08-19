@@ -21,8 +21,52 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backtest_engine import (  # noqa: E402
-    benchmark_series, evaluate, load_names, load_snapshots, rank_universe, run_backtest,
+    benchmark_series, evaluate, load_names, load_snapshots, official_index_series,
+    rank_universe, run_backtest,
 )
+
+
+def build_benchmarks(snaps, dates, names):
+    """공정 benchmark 묶음 — 전략과 **같은 생존조건**(선정시점 필터·상장폐지 청산)을 쓴다.
+    공식 지수는 산출주체가 달라 별도 항목으로 분리한다(혼동 금지)."""
+    out = {}
+    for key, kw in (
+        ("EQUAL_MONTHLY", dict(weighting="EQUAL", rebalance="MONTHLY")),
+        ("EQUAL_MONTHLY_COST", dict(weighting="EQUAL", rebalance="MONTHLY", cost_bps=15.0, sell_tax_bps=20.0)),
+        ("EQUAL_BUY_HOLD", dict(weighting="EQUAL", rebalance="BUY_HOLD")),
+        ("CAP_MONTHLY", dict(weighting="CAP", rebalance="MONTHLY")),
+        ("EQUAL_MONTHLY_DELIST100", dict(weighting="EQUAL", rebalance="MONTHLY", delist_haircut=1.0)),
+    ):
+        b = benchmark_series(snaps, dates, names, **kw)
+        out[key] = {k: b[k] for k in ("cagr", "final", "years", "delistEvents",
+                                      "delistWeightSum", "turnoverPerYear", "weighting",
+                                      "rebalance", "costBps", "sellTaxBps", "delistHaircut")}
+    for mkt in ("KOSPI", "KOSDAQ"):
+        b = benchmark_series(snaps, dates, names, market=mkt)
+        out[f"EQUAL_MONTHLY_{mkt}"] = {k: b[k] for k in ("cagr", "final", "delistEvents", "turnoverPerYear")}
+        o = official_index_series(dates, mkt)
+        if o:
+            out[f"OFFICIAL_{mkt}"] = {"cagr": o["cagr"], "final": o["final"],
+                                      "source": o["source"], "note": o["note"]}
+    return out
+
+
+def regime_windows(snaps, dates, names, *, window=24):
+    """bull / bear / sideways 구간 분류 — 공정 benchmark(동일가중 월리밸) 자체 수익률로 나눈다.
+    전략 성과로 국면을 정의하면 순환논리가 되므로 시장 기준으로만 분류한다."""
+    b = benchmark_series(snaps, dates, names)
+    ser = {x["date"]: x["index"] for x in b["series"]}
+    out = []
+    for i in range(0, len(dates) - window, window):
+        sub = dates[i:i + window + 1]
+        a, z = ser.get(sub[0]), ser.get(sub[-1])
+        if not a or not z or a <= 0:
+            continue
+        ann = (z / a) ** (12.0 / window) - 1.0
+        regime = "BULL" if ann > 0.10 else ("BEAR" if ann < -0.05 else "SIDEWAYS")
+        out.append({"start": sub[0], "end": sub[-1], "benchAnnual": ann, "regime": regime,
+                    "dates": sub})
+    return out
 
 HOLD_MONTHS = [2, 3, 6, 9, 12, 18, 24, 36]
 N_STOCKS = [10, 20, 30, 40, 50]
@@ -168,9 +212,14 @@ def main(argv=None) -> int:
         ]:
             res, ev = one(snaps, names, dates, **kw)
             rows.append(summarize(tag, kw, res, ev))
-        bench = benchmark_series(snaps, dates, names)
-        out = {"meta": meta, "baseline": rows,
-               "benchmarkEqualWeight": {"first": bench[0], "last": bench[-1]} if bench else None}
+        bm = build_benchmarks(snaps, dates, names)
+        fair = bm["EQUAL_MONTHLY"]["cagr"]
+        for r in rows:
+            r["benchmarkFairCagr"] = fair
+            r["excessVsFair"] = (r["twrCagr"] - fair) if r.get("twrCagr") is not None else None
+        out = {"meta": meta, "baseline": rows, "benchmarks": bm,
+               "benchmarkNote": "EQUAL_MONTHLY = 전략과 동일 생존조건(선정시점 필터·상장폐지 청산)의 "
+                                "동일가중 시장 포트폴리오. 공식 지수(OFFICIAL_*)는 산출주체가 달라 별도."}
     elif args.mode == "matrix":
         rows = []
         for h in HOLD_MONTHS:
@@ -183,7 +232,46 @@ def main(argv=None) -> int:
                 kw = dict(hold_months=h, n_stocks=20, contribution=c)
                 res, ev = one(snaps, names, dates, **kw)
                 rows.append(summarize(f"H{h}_N20_{c}", kw, res, ev))
-        out = {"meta": meta, "matrix": rows}
+        bm = build_benchmarks(snaps, dates, names)
+        fair = bm["EQUAL_MONTHLY"]["cagr"]
+        for r in rows:
+            r["benchmarkFairCagr"] = fair
+            r["excessVsFair"] = (r["twrCagr"] - fair) if r.get("twrCagr") is not None else None
+        # ── plateau 판정 — 인접 격자(보유기간 ±1칸, 종목수 ±1칸)와 비교 ──────────────
+        grid = {}
+        for r in rows:
+            p = r["params"]
+            if r.get("twrCagr") is not None and p.get("contribution") == "LUMP_SUM" \
+               and r["tag"].endswith("_LUMP"):
+                grid[(p["hold_months"], p["n_stocks"])] = r["twrCagr"]
+        plateau = []
+        for (h, n), v in sorted(grid.items()):
+            hi, ni = HOLD_MONTHS.index(h), N_STOCKS.index(n)
+            neigh = []
+            for dh, dn in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                a, b2 = hi + dh, ni + dn
+                if 0 <= a < len(HOLD_MONTHS) and 0 <= b2 < len(N_STOCKS):
+                    k = (HOLD_MONTHS[a], N_STOCKS[b2])
+                    if k in grid:
+                        neigh.append(grid[k])
+            if not neigh:
+                continue
+            worst = min(neigh)
+            # 자기만 좋고 이웃이 급락하면 단독 peak(과최적화 의심)
+            is_peak = v > fair and worst < fair and (v - worst) > 0.05
+            plateau.append({"hold": h, "n": n, "cagr": v, "neighborMin": worst,
+                            "neighborMean": sum(neigh) / len(neigh),
+                            "beatsFair": v > fair,
+                            "neighborsBeatFair": all(x > fair for x in neigh),
+                            "isolatedPeak": is_peak})
+        robust = [p for p in plateau if p["beatsFair"] and p["neighborsBeatFair"]]
+        peaks = [p for p in plateau if p["isolatedPeak"]]
+        out = {"meta": meta, "matrix": rows, "benchmarks": bm,
+               "plateau": {"cells": plateau, "robustCells": robust, "isolatedPeaks": peaks,
+                           "robustCount": len(robust), "peakCount": len(peaks),
+                           "verdict": ("ROBUST_CANDIDATE" if len(robust) >= 3 else
+                                       "WEAK_CANDIDATE" if len(robust) >= 1 else
+                                       "OVERFIT_PEAK" if peaks else "NO_ROBUST_STRATEGY")}}
     else:  # robust
         rows = []
         base = dict(hold_months=12, n_stocks=20, contribution="LUMP_SUM")
@@ -217,14 +305,55 @@ def main(argv=None) -> int:
             sub = dates[i:i + 61]
             res, ev = one(snaps, names, sub, **base)
             rows.append(summarize(f"SUB_{sub[0][:7]}_{sub[-1][:7]}", dict(base), res, ev))
-        out = {"meta": meta, "robustness": rows}
+        bm = build_benchmarks(snaps, dates, names)
+        fair = bm["EQUAL_MONTHLY"]["cagr"]
+        for r in rows:
+            r["benchmarkFairCagr"] = fair
+            r["excessVsFair"] = (r["twrCagr"] - fair) if r.get("twrCagr") is not None else None
+        # ── bull / bear / sideways — 시장 국면별로 전략이 견디는가 ──────────────────
+        regimes = []
+        for w in regime_windows(snaps, dates, names, window=24):
+            res, ev = one(snaps, names, w["dates"], **base)
+            # 같은 구간의 공정 benchmark 연율
+            bsub = benchmark_series(snaps, w["dates"], names)
+            regimes.append({"start": w["start"], "end": w["end"], "regime": w["regime"],
+                            "benchAnnual": bsub["cagr"],
+                            "stratAnnual": (ev["twrCagr"] if ev else None),
+                            "excess": ((ev["twrCagr"] - bsub["cagr"]) if ev and ev.get("twrCagr") is not None else None),
+                            "stratMdd": (ev["mdd"] if ev else None)})
+        byreg = {}
+        for r in regimes:
+            if r["excess"] is None:
+                continue
+            byreg.setdefault(r["regime"], []).append(r["excess"])
+        regime_summary = {k: {"windows": len(v), "meanExcess": sum(v) / len(v),
+                              "winRate": sum(1 for x in v if x > 0) / len(v)}
+                          for k, v in byreg.items()}
+        beat = [r for r in rows if r.get("excessVsFair") is not None and r["excessVsFair"] > 0]
+        out = {"meta": meta, "robustness": rows, "benchmarks": bm,
+               "regimes": regimes, "regimeSummary": regime_summary,
+               "beatsFairCount": len(beat), "totalRows": len(rows)}
 
     txt = json.dumps(out, ensure_ascii=False, indent=2, default=float)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(txt, encoding="utf-8")
         print(f"written {args.out}", file=sys.stderr)
-    print(txt)
+        # --out 이 있으면 결과 전문을 stdout 으로 다시 뱉지 않는다.
+        #   Windows 콘솔 기본 코덱(cp949)이 '—' 같은 문자를 못 써서 UnicodeEncodeError 로 죽고,
+        #   **파일은 정상 저장됐는데 exit 1** 이 됐다. 그러면 자동 연구 체인이 이를
+        #   HARD_FAILURE 로 오판한다(pit_pipeline_state.run_research 는 returncode 로 판정).
+        print(json.dumps({"written": args.out, "bytes": len(txt)}, ensure_ascii=False))
+        return 0
+    # 콘솔 직접 출력 경로에서도 인코딩 때문에 죽지 않게 한다.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        print(txt)
+    except UnicodeEncodeError:
+        sys.stdout.buffer.write(txt.encode("utf-8", errors="replace"))
     return 0
 
 

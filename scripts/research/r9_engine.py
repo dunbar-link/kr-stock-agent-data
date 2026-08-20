@@ -287,6 +287,30 @@ def _pick(cache, d, uni, *, factor, percentile, n_holdings, selection, rng, bann
             used.add(c)
             out.append(c)
         return out
+    if selection == "SIZE_MARKET_MATCHED":
+        # R10 §11 — 시장(거래소) **과** 시총 5분위를 동시에 맞춘 통제군.
+        #   size 만 맞추거나 market 만 맞추면 남은 축으로 노출이 새어나간다.
+        #   두 축을 동시에 고정했을 때도 BM 이 이기는지 보는 가장 엄격한 통제군이다.
+        buckets, pos = {}, {}
+        for m in {uni[t]["market"] for t in avail}:
+            grp = sorted(((uni[t]["marketCap"] or 0), t) for t in avail
+                         if uni[t]["market"] == m)
+            nn = len(grp)
+            for j, (_, t) in enumerate(grp):
+                b = (m, min(4, (j * 5) // nn) if nn else 0)
+                buckets.setdefault(b, []).append(t)
+                pos[t] = b
+        out, used = [], set()
+        for t in fac:
+            b = pos.get(t)
+            cand = [x for x in buckets.get(b, avail) if x not in used] or \
+                   [x for x in avail if x not in used]
+            if not cand:
+                break
+            c = rng.choice(cand)
+            used.add(c)
+            out.append(c)
+        return out
     raise ValueError(selection)
 
 

@@ -1509,10 +1509,15 @@ def mode_cashaudit(sn, nm, ds, cache, idx):
     # ── 진입 스케줄 결함이 시작연도 의존성을 만드는가 ────────────────────────
     #   신규 시작 시 첫 24개월은 자본의 ~80% 가 현금이다. 그러면 결과가 'BM 이 좋은가'
     #   보다 '첫 2년간 시장이 어땠는가'에 좌우된다. 상관관계로 확인한다.
-    wfp = RD / "r9-walkforward-latest.json"
+    # ★ 파일명을 하드코딩하지 않는다. save/load 를 교체해 같은 검증을 다른 엔진에
+    #   재사용할 때(R10) r9 파일을 잘못 읽는 사고가 난다(실측: R10 cashaudit 이
+    #   r9 cohort rows 를 읽어 동일 수치를 출력했다). 반드시 load() 경유.
     ent = None
-    if wfp.exists():
-        rows = json.loads(wfp.read_text(encoding="utf-8"))["cohortDistribution"]["rows"]
+    try:
+        rows = load("walkforward")["cohortDistribution"]["rows"]
+    except (OSError, ValueError, KeyError):
+        rows = None
+    if rows:
         xs, ys = [], []
         for r in rows:
             o = r["offset"]

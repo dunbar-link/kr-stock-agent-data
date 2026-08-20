@@ -137,7 +137,13 @@ def fwd_return(px, i, j, ticker, haircut=0.0):
 
 # ──────────────────────────── 분위 테스트 ────────────────────────────
 def quantile_panel(snapshots, names, dates, *, market="COMBINED", min_market_cap=300,
-                   haircut=0.0, size_bucket=None, factors=None):
+                   haircut=0.0, size_bucket=None, factors=None,
+                   extra_value_fn=None, universe_filter=None):
+    # R13 가산 주입점 (기본값 None → R7 동작 완전 불변, 회귀로 고정)
+    #   extra_value_fn(uni, d, i) -> {factorName: {ticker: value}}
+    #       날짜 문맥이 필요한 factor(과거 스냅샷 기반·DART 공시일 기반)를 넣는다.
+    #   universe_filter(uni, d, i) -> uni
+    #       BM 상위 20% 내부 분석처럼 모집단을 좁힐 때 쓴다.
     """각 시점 × 팩터 × 분위 × horizon 의 forward return 을 모은다."""
     px = build_price_index(snapshots, dates)
     acc = {}          # factor -> horizon -> quantile -> [returns]
@@ -156,7 +162,14 @@ def quantile_panel(snapshots, names, dates, *, market="COMBINED", min_market_cap
             uni = {t: r for t, r in uni.items() if t in keep}
             if len(uni) < N_QUANTILES * MIN_PER_QUANTILE // 2:
                 continue
+        if universe_filter is not None:
+            uni = universe_filter(uni, d, i)
+            if not uni:
+                continue
         fv = factor_values(uni)
+        if extra_value_fn is not None:
+            for k, v in (extra_value_fn(uni, d, i) or {}).items():
+                fv[k] = v
         if factors:
             fv = {k: v for k, v in fv.items() if k in factors}
         for h in HORIZONS:

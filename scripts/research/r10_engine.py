@@ -54,7 +54,7 @@ def simulate(cache, dates, *, factor="BM", percentile=0.20, n_holdings=40,
              buy_every=24, cost_bps=COST_BPS, sell_tax_bps=SELL_TAX_BPS,
              slippage_bps=0.0, delist_haircut=0.0, selection="FACTOR",
              seed=20260820, banned=None, names=None,
-             maturity_unit=MATURITY_COHORT):
+             maturity_unit=MATURITY_COHORT, pick_fn=None, fractional_shares=False):
     """사전규격 준수 회계. 정수주만 · 월 스냅샷 종가 체결 · 레버리지 0 · 음수현금 0."""
     n = len(dates)
     if n < hold_months + 4:
@@ -148,9 +148,11 @@ def simulate(cache, dates, *, factor="BM", percentile=0.20, n_holdings=40,
         kind = None
         if is_selection:
             uni = cache.universe(d)
-            picks = _pick(cache, d, uni, factor=factor, percentile=percentile,
-                          n_holdings=n_holdings, selection=selection, rng=rng,
-                          banned=banned)
+            # pick_fn 주입점 (R11 fair control). 미지정이면 R10 동작 그대로.
+            chooser = pick_fn or _pick
+            picks = chooser(cache, d, uni, factor=factor, percentile=percentile,
+                            n_holdings=n_holdings, selection=selection, rng=rng,
+                            banned=banned)
             if picks:
                 cohort_id += 1
                 cohort_tickers = list(picks)
@@ -174,7 +176,7 @@ def simulate(cache, dates, *, factor="BM", percentile=0.20, n_holdings=40,
                     continue
                 exec_p = p * (1.0 + slip)
                 budget = per / (1.0 + cost_bps / 10000.0)
-                qty = int(budget // exec_p)          # 정수주만
+                qty = (budget / exec_p) if fractional_shares else int(budget // exec_p)
                 if qty <= 0:
                     continue
                 gross = exec_p * qty

@@ -138,12 +138,15 @@ def fwd_return(px, i, j, ticker, haircut=0.0):
 # ──────────────────────────── 분위 테스트 ────────────────────────────
 def quantile_panel(snapshots, names, dates, *, market="COMBINED", min_market_cap=300,
                    haircut=0.0, size_bucket=None, factors=None,
-                   extra_value_fn=None, universe_filter=None):
+                   extra_value_fn=None, universe_filter=None, horizons=None):
     # R13 가산 주입점 (기본값 None → R7 동작 완전 불변, 회귀로 고정)
     #   extra_value_fn(uni, d, i) -> {factorName: {ticker: value}}
     #       날짜 문맥이 필요한 factor(과거 스냅샷 기반·DART 공시일 기반)를 넣는다.
     #   universe_filter(uni, d, i) -> uni
     #       BM 상위 20% 내부 분석처럼 모집단을 좁힐 때 쓴다.
+    #   horizons=[...] (R14 가산)
+    #       기본 None 이면 모듈 상수 HORIZONS 를 그대로 쓴다(R7/R13 동작 불변).
+    #       R14 는 장기 [12,36,60,84] 를 넘긴다.
     """각 시점 × 팩터 × 분위 × horizon 의 forward return 을 모은다."""
     px = build_price_index(snapshots, dates)
     acc = {}          # factor -> horizon -> quantile -> [returns]
@@ -172,7 +175,7 @@ def quantile_panel(snapshots, names, dates, *, market="COMBINED", min_market_cap
                 fv[k] = v
         if factors:
             fv = {k: v for k, v in fv.items() if k in factors}
-        for h in HORIZONS:
+        for h in (horizons or HORIZONS):
             j = i + h
             if j >= len(dates):
                 continue
@@ -210,8 +213,10 @@ def ann(r, months):
 
 
 def summarize_factor(acc, uni_acc, fname):
+    # R14 가산: 상수 HORIZONS 대신 **실제 acc 에 존재하는 horizon** 을 돈다.
+    # R7/R13 은 acc 가 HORIZONS 키만 가지므로 동작이 바뀌지 않는다(회귀로 고정).
     out = {}
-    for h in HORIZONS:
+    for h in sorted(acc.get(fname, {}) or HORIZONS):
         qd = acc.get(fname, {}).get(h)
         if not qd:
             continue
@@ -230,8 +235,22 @@ def summarize_factor(acc, uni_acc, fname):
             "top": top, "bottom": bot, "universe": uni,
             "topMinusBottom": (top - bot) if (top is not None and bot is not None) else None,
             "topMinusUniverse": (top - uni) if (top is not None and uni is not None) else None,
+            # R7 원 정의 — 누적수익 '차이'를 연율화한다. 12M 에서는 무난하지만
+            # 60/84M 에서는 왜곡이 크다(예: top +200% / bottom +50% 이면
+            # ann(1.50,60)=20.1% 인데 실제 연율 차이는 24.6-8.4=16.2%p).
+            # R13 재현 호환을 위해 그대로 남긴다.
             "topMinusBottomAnn": ann(top - bot, h) if (top is not None and bot is not None) else None,
             "topMinusUniverseAnn": ann(top - uni, h) if (top is not None and uni is not None) else None,
+            # R14 가산 — **연율수익률의 차이**. 장기 horizon 의 올바른 spread 지표다.
+            "topAnn": ann(top, h) if top is not None else None,
+            "bottomAnn": ann(bot, h) if bot is not None else None,
+            "universeAnn": ann(uni, h) if uni is not None else None,
+            "annSpread": ((ann(top, h) - ann(bot, h))
+                          if (ann(top, h) is not None and ann(bot, h) is not None)
+                          else None),
+            "annTopMinusUniverse": ((ann(top, h) - ann(uni, h))
+                                    if (ann(top, h) is not None and ann(uni, h) is not None)
+                                    else None),
             "gradientCorr": grad,
             "obsOverlapping": n_obs,
             "obsNonOverlapping": (n_obs // h) if n_obs else 0,

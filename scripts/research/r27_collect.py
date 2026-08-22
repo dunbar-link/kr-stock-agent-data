@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -73,6 +74,27 @@ def needed_days(cal, decision_dates):
 MAX_RETRY = 3
 RETRY_BACKOFF = (1.0, 3.0, 8.0)
 CONSECUTIVE_FAIL_ABORT = 25
+
+# ★ 자체수정 3 (R28 §13·§41) — **약관 게이트**
+#   2026-08-22 실측: KRX 가 이 수집을 차단하며 명시적으로 응답했다.
+#     "자동화 수단을 통한 비정상 대량 조회가 감지되어 해당 IP 의 접속이
+#      일시적으로 제한되었습니다. KRX Data Marketplace 이용약관 제10조 제2호는
+#      자동화 수단을 이용한 정보 무단 수집·복제·배포를 금지하고 있으며 ...
+#      일정 기간의 데이터를 일괄적으로 이용하고자 하는 경우 화면 다운로드 기능,
+#      데이터 상품 구입 또는 KRX Open API(openapi.krx.co.kr) 등 공식 경로를
+#      이용해 주시기 바랍니다."
+#   이것은 버그도 일시 장애도 아니라 **서비스 약관 금지 통보**다. 차단이 풀려도
+#   같은 대량 수집을 반복하면 (1) 약관 위반을 알고도 되풀이하는 것이 되고,
+#   (2) 재차단 시 pykrx 를 매일 쓰는 **운영 예약 runner**(15:40 signal ·
+#       16:20 fund plan · 16:25 auto apply)가 함께 죽는다.
+#   그래서 대량 수집은 기본 차단하고, 사람이 명시적으로 승인한 경우에만 연다.
+BULK_LIMIT_WITHOUT_APPROVAL = 40
+TOS_NOTICE = (
+    "KRX Data Marketplace 이용약관 제10조 제2호 — 자동화 수단을 이용한 정보 "
+    "무단 수집·복제·배포 금지. 2026-08-22 이 수집으로 IP 1일 차단 통보를 받았다. "
+    "공식 경로: 화면 다운로드 기능 · 데이터 상품 구입 · KRX Open API "
+    "(openapi.krx.co.kr). 세 경로 모두 Founder 결정이 필요하다.")
+APPROVAL_ENV = "WABABA_KRX_BULK_APPROVED"
 
 
 def _reset_krx_session():
@@ -161,6 +183,49 @@ def main() -> int:
     print(f"[r27] 거래일 캘린더 {len(cal)} · 결정일 {len(ds)} · "
           f"필요 {len(need)} · 보유 {len(need) - len(todo)} · 수집 {len(todo)}",
           file=sys.stderr)
+
+    # ★ 약관 게이트 — 승인 없이 대량 수집을 시작하지 않는다.
+    approved = os.environ.get(APPROVAL_ENV) == "1"
+    if len(todo) > BULK_LIMIT_WITHOUT_APPROVAL and not approved:
+        # ★ inventory 는 provenance 기록이다. 차단됐다고 소스·창·규칙 필드를
+        #   떨어뜨리면 "무엇을 어떻게 받으려 했는지"를 잃는다. 스키마를 그대로
+        #   유지하고 차단 사실만 **추가**한다(R28 자체수정 4).
+        out = {"task": "R27/R28", "status": "BLOCKED_KRX_TOS",
+               "tosNotice": TOS_NOTICE,
+               "source": "pykrx stock.get_market_cap_by_ticker(ymd, market='ALL')",
+               "sourceReuse": "PIT 스냅샷 빌더가 이미 쓰는 함수. 새 crawler 0(§3).",
+               "columns": ["거래량", "거래대금", "종가", "시가총액", "상장주식수"],
+               "lookbackTradingDays": LOOKBACK,
+               "lookAheadRule": "결정일 직전 20거래일만. 결정일 당일·이후 미사용(§8).",
+               "tradingCalendarDays": len(cal),
+               "decisionDates": len(ds),
+               "daysRequired": len(need),
+               "daysCollectedTotal": len(need) - len(todo),
+               "daysNewThisRun": 0, "daysEmpty": 0, "daysFailed": 0,
+               "daysPending": len(todo),
+               "failures": [], "aborted": "BLOCKED_KRX_TOS",
+               "retryPolicy": {"maxRetry": MAX_RETRY,
+                               "backoffSec": list(RETRY_BACKOFF),
+                               "sessionResetOnFail": True,
+                               "consecutiveFailAbort": CONSECUTIVE_FAIL_ABORT},
+               "cacheDir": str(CACHE),
+               "coveragePct": round(100.0 * (len(need) - len(todo)) / len(need), 3)
+               if need else 0.0,
+               "bulkLimitWithoutApproval": BULK_LIMIT_WITHOUT_APPROVAL,
+               "approvalEnv": APPROVAL_ENV,
+               "why": ("차단이 풀렸더라도 같은 대량 수집을 반복하면 약관 위반을 "
+                       "알고도 되풀이하는 것이고, 재차단 시 pykrx 를 매일 쓰는 "
+                       "운영 예약 runner 가 함께 죽는다."),
+               "founderDecisionRequired": [
+                   "① KRX Data Marketplace 화면 다운로드(수동)",
+                   "② 데이터 상품 구입(유료 — 현재 정책상 0)",
+                   "③ KRX Open API 키 발급(신규 credential — 승인 게이트)"],
+               "paidData": 0, "newCredential": 0}
+        RD.mkdir(parents=True, exist_ok=True)
+        (RD / "r27-data-inventory-latest.json").write_text(
+            json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(out, ensure_ascii=False))
+        return 3
 
     new = fail = empty = 0
     fails = []

@@ -59,10 +59,14 @@ def run_suite(test_files, *, fail_fast=False) -> dict:
             if fail_fast:
                 break
             continue
+        # 자식은 -X utf8 / PYTHONUTF8=1 로 UTF-8 출력 → 부모도 UTF-8 로 디코드해야 한다.
+        # encoding 미지정 시 Windows locale(cp949)로 디코드하다 한글 출력에서 UnicodeDecodeError가
+        # 나고, reader thread가 죽어 proc.stdout 이 None 이 된다.
         proc = subprocess.run([sys.executable, "-X", "utf8", str(path)],
-                              capture_output=True, text=True, env=env, cwd=str(SCRIPTS))
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env, cwd=str(SCRIPTS))
         m = None
-        for line in reversed(proc.stdout.splitlines()):
+        for line in reversed((proc.stdout or "").splitlines()):
             m = _SUMMARY_RE.search(line)
             if m:
                 break

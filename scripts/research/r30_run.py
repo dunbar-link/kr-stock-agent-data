@@ -82,6 +82,11 @@ def r27_precommit_unchanged():
 REASONS = {
     "CREDENTIAL_ABSENT": ("WAIT", "R30_CREDENTIAL_ABSENT_PENDING_FOUNDER_REGISTRATION"),
     "CREDENTIAL_INVALID": ("WAIT", "R30_CREDENTIAL_INVALID"),
+    # 키는 등록됐는데 통제연도조차 못 받았다 — 인증 미실효. 원인은 응답으로
+    # 구분되지 않으므로(무효키·빈키·정상키가 같은 코드) 소스 부적합으로
+    # 단정하지 않고 Founder 활성화 확인 대기로 둔다.
+    "CREDENTIAL_NOT_EFFECTIVE": (
+        "WAIT", "R30_CREDENTIAL_NOT_EFFECTIVE_PENDING_FOUNDER_ACTIVATION"),
     "PROBE_PASS_2010_PLUS_ONLY": ("BLOCKED", "R30_PRIMARY_FULL_PERIOD_FAIL_2007_2009_MISSING"),
     "PROBE_FAIL_NO_HISTORY": ("BLOCKED", "R30_PRIMARY_NO_HISTORICAL_COVERAGE"),
     "NO_TRADED_VALUE": ("BLOCKED", "R30_TRADED_VALUE_FIELD_MISSING"),
@@ -162,6 +167,9 @@ def main() -> int:
         "secretExposure": 0,
         "probeVerdict": pverdict,
         "probeFailedChecks": sv.get("failedChecks", []),
+        "probeNotMeasuredChecks": sv.get("notMeasuredChecks", []),
+        "authEffective": (read("r30-historical-coverage-probe")
+                          .get("authEffective")),
         "fullAcquisitionExecuted": bool(acquired.get("newlyAcquiredDays")),
         "requiredDays": coverage.get("requiredDays") or acquired.get("requiredDays"),
         "inheritedDays": coverage.get("daysInheritedFromR27")

@@ -82,6 +82,17 @@ def main() -> int:
         a("> 만들지도 않았다(§2). 대신 **키가 들어오면 명령 하나로 끝까지 가도록**")
         a("> probe → 전체수집 → coverage → R27 재실행 파이프라인을 전부 만들어")
         a("> 두고 회귀 테스트까지 통과시켰다. Founder 행동은 **1건**이다.")
+    elif sv.get("verdict") == "CREDENTIAL_NOT_EFFECTIVE":
+        cy = hist.get("controlYear")
+        a("> 인증키는 등록됐는데 **호출이 성립하지 않았다.** 2007년뿐 아니라")
+        a(f"> 반드시 데이터가 있어야 하는 통제연도 **{cy}년까지 row 0** 이고,")
+        a(f"> 모든 연도가 같은 오류(`{hist.get('controlYearStatus')}`)로 죽었다.")
+        a("> 무효키·빈키·정상키에 게이트웨이가 **같은 코드**를 돌려주므로 응답만으로")
+        a("> 키 오류인지 활용신청 미승인인지 포털 반영 지연인지 구분되지 않는다.")
+        a("> 그래서 **\"이 소스에 historical 이 없다\" 고 판정하지 않았다** — 그렇게")
+        a("> 적으면 유일한 합법 소스를 근거 없이 폐기하는 것이 된다. coverage·")
+        a("> 거래대금·상폐 축은 FAIL 이 아니라 **미측정**으로 남긴다. Founder")
+        a("> 행동은 1건이다.")
     elif j == "PASS":
         a("> 공식 소스로 historical 유동성을 채웠고 R27 tradability 판정까지 끝냈다.")
     else:
@@ -135,12 +146,16 @@ def main() -> int:
     a("")
     a("| 축 | 결과 |")
     a("|---|---|")
+    nm = set(sv.get("notMeasuredChecks") or [])
     for k, v in (sv.get("checks") or {}).items():
-        a(f"| {k} | {'PASS' if v else 'FAIL'} |")
+        a(f"| {k} | {'PASS' if v else ('NOT_MEASURED' if k in nm else 'FAIL')} |")
     a("")
     a(f"- probe 판정: **{sv.get('verdict')}**")
     a(f"- 전체수집 허용: **{sv.get('fullAcquisitionAllowed')}**")
-    a(f"- 실패 축: `{sv.get('failedChecks')}`")
+    a(f"- 실패 축: `{sorted(set(sv.get('failedChecks') or []) - nm)}`")
+    if nm:
+        a(f"- 미측정 축: `{sorted(nm)}`  ← 호출이 성립하지 않아 **판정 불가**. "
+          "부적합 판정이 아니다.")
     a("")
 
     a("### 4-1. 연도별 실제 row (§6 — HTTP 200 은 coverage PASS 가 아니다)")
@@ -160,6 +175,21 @@ def main() -> int:
     a("2007·2008·2009 는 hard check 다. 하나라도 실제 row 가 없으면")
     a("`PRIMARY_FULL_PERIOD_FAIL` 이고 전체수집을 시작하지 않는다.")
     a("")
+
+    disc = hist.get("authDiscrimination") or L("auth-discrimination")
+    if disc.get("probes"):
+        a("### 4-1-B. 인증 실패 vs 소스 한계 판별 (추가 2콜)")
+        a("")
+        a("```")
+        a(f"통제연도 {hist.get('controlYear')} 정상키 코드   "
+          f"{disc.get('controlYearCode')}")
+        for k, v in (disc.get("probes") or {}).items():
+            a(f"{k:22s} 코드 {v.get('code')}  {v.get('errMsg')}")
+        a(f"게이트웨이가 인증 상태를 구분하는가   {disc.get('gatewayDiscriminates')}")
+        a("```")
+        a("")
+        a(disc.get("conclusion", ""))
+        a("")
 
     a("### 4-2. 거래량 / 거래대금 스키마 (§5)")
     a("")
@@ -384,7 +414,36 @@ def main() -> int:
     # ── 12. Founder 행동 ─────────────────────────────────────
     a("## 12. Founder 행동 / 다음 단일 작업")
     a("")
-    if cred.get("status") == "ABSENT":
+    if sv.get("verdict") == "CREDENTIAL_NOT_EFFECTIVE":
+        a("- **Founder 행동: 1건.**")
+        a("")
+        a("```")
+        a("공공데이터포털에서 이 인증키가 '주식시세정보' 서비스에 실제로")
+        a("활성화돼 있는지 확인 (키 값은 저에게 보여주지 않으셔도 됩니다)")
+        a("")
+        a("  1) data.go.kr 로그인 → 마이페이지 → 오픈API → 개발계정")
+        a("     · 금융위원회_주식시세정보 가 목록에 있는가?")
+        a("     · 상태가 '승인' 인가? (신청만 하고 미승인이면 호출 전부 거부)")
+        a("     · '일반 인증키(Decoding)' 를 그대로 등록했는가?")
+        a("  2) 같은 화면의 '미리보기/테스트' 로 basDt=20260803 호출이")
+        a("     200 으로 오는지 한 번만 눌러보기")
+        a("     · 포털에서도 실패 → 포털 쪽 문제(승인·반영 지연). 보통 1~24시간.")
+        a("     · 포털에서만 성공 → 등록된 키 값이 다른 것이므로 재등록:")
+        a("         setx DATA_GO_KR_SERVICE_KEY \"<일반 인증키(Decoding)>\"")
+        a("         → 새 터미널을 열어야 반영된다")
+        a("")
+        a("  · env 는 제가 건드리지 않았습니다. 대장이 직접 넣습니다(§5 승인 게이트).")
+        a("  · 확인 후 명령 하나면 끝까지 갑니다:")
+        a("      python scripts/research/r30_run.py")
+        a("```")
+        a("")
+        a("- 다음 작업 결정 규칙: **D** (§33 — 공식 source 확정 전까지 gap 하나만)")
+        a("")
+        a("- 다음 단일 작업: **공공데이터포털에서 `주식시세정보` 개발계정 승인 상태를 "
+          "확인하고(또는 반영 지연이면 대기 후) `python scripts/research/r30_run.py` "
+          "를 다시 돌린다. 소스 교체·새 factor 연구 금지 — 이 소스는 아직 "
+          "부적합으로 판정된 것이 아니다.**")
+    elif cred.get("status") == "ABSENT":
         a("- **Founder 행동: 1건.**")
         a("")
         a("```")

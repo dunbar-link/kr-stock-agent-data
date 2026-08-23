@@ -21,6 +21,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import re
 import statistics
 import sys
 import time
@@ -39,6 +40,12 @@ R27_CACHE = ROOT / "_cache" / "krx-liquidity"
 # ── 사전 고정 상수 (결과를 보기 전에 정한다) ─────────────────────────
 PROBE_YEARS = [2007, 2008, 2009, 2010, 2015, 2020, 2026]
 HARD_YEARS = [2007, 2008, 2009]           # §6 — 하나라도 없으면 FULL_PERIOD_FAIL
+# §6 역방향 규칙 — "HTTP 200 은 coverage PASS 가 아니다" 의 짝.
+#   **API_ERROR 는 coverage FAIL 이 아니다.** 최신 통제연도(반드시 데이터가
+#   있어야 하는 해)조차 row 를 못 받으면 그건 소스의 historical 한계가 아니라
+#   호출 자체가 성립하지 않은 것이다. 그 상태에서 "historical 없음" 이라고
+#   판정하면 유일한 합법 소스를 근거 없이 폐기하게 된다.
+CONTROL_YEAR = 2026                       # 최신 = 반드시 존재해야 하는 해
 CROSSCHECK_MIN_DAYS = 20                  # §9
 CROSSCHECK_MIN_TICKERS = 3                # §9
 VOLUME_EXACT_MATCH_MIN = 0.99             # 거래량은 시장사실 — 사실상 완전일치
@@ -146,9 +153,62 @@ def historical_coverage(cli, days, samples):
            if res["byYear"].get(str(y), {}).get("rows", 0) > 0]
     res["hardYearsWithRows"] = got
     res["fullPeriodPass"] = len(got) == len(HARD_YEARS)
-    res["verdict"] = ("FULL_PERIOD_OK" if res["fullPeriodPass"]
-                      else "PRIMARY_FULL_PERIOD_FAIL")
+
+    # ── 통제연도 — 인증이 실효했는지 먼저 본다 ────────────────────
+    ctrl = res["byYear"].get(str(CONTROL_YEAR), {})
+    res["controlYear"] = CONTROL_YEAR
+    res["controlYearStatus"] = ctrl.get("status")
+    res["controlYearRows"] = ctrl.get("rows", 0)
+    res["authEffective"] = bool(ctrl.get("rows", 0) > 0)
+    # 모든 연도가 같은 오류로 죽었는지 — 소스 한계가 아니라 호출 실패의 서명이다
+    sts = {v.get("status") for v in res["byYear"].values()}
+    res["allYearsSameFailure"] = (len(sts) == 1 and "OK" not in sts)
+    res["coverageMeasurable"] = res["authEffective"]
+
+    if not res["authEffective"]:
+        # 측정 자체가 성립하지 않았다. coverage 결론을 내지 않는다(fail-closed).
+        res["verdict"] = "NOT_MEASURABLE_AUTH_NOT_EFFECTIVE"
+        res["fullPeriodPass"] = False
+        res["note"] = (
+            f"통제연도 {CONTROL_YEAR} 조차 row 0 (status={ctrl.get('status')}). "
+            "이 소스에 historical 이 없다는 뜻이 아니라 호출이 성립하지 않은 "
+            "것이다 — coverage 결론을 내지 않는다(§6 역방향).")
+    else:
+        res["verdict"] = ("FULL_PERIOD_OK" if res["fullPeriodPass"]
+                          else "PRIMARY_FULL_PERIOD_FAIL")
     return res
+
+
+def auth_discrimination(cli_key_present):
+    """인증 실패인지 소스 한계인지 — 게이트웨이가 구분해 주는지 본다.
+
+    같은 요청을 (a) 무효키 (b) 빈키 로 한 번씩 더 보낸다. 정상키와 **같은**
+    오류코드가 돌아오면 게이트웨이는 인증 상태를 구분해 주지 않는 것이므로,
+    응답만으로 "키가 틀렸다" 고도 "소스에 데이터가 없다" 고도 단정할 수 없다.
+    그 사실 자체를 evidence 로 남긴다 — 다음 세션이 다시 추측하지 않도록.
+
+    통제연도가 실패했을 때만 부른다(추가 2콜).
+    """
+    import requests
+    out = {"rule": "무효키·빈키·정상키에 같은 코드가 오면 응답으로 인증 상태를 "
+                   "판별할 수 없다 — 소스 부적합으로 단정 금지.",
+           "probes": {}, "extraCalls": 0}
+    params = {"resultType": "json", "numOfRows": 1, "pageNo": 1,
+              "basDt": str(CONTROL_YEAR) + "0803"}
+    for label, key in (("invalidKey", "X" * 32), ("emptyKey", "")):
+        try:
+            r = requests.get(S.ENDPOINT, params={**params, "serviceKey": key},
+                             timeout=S.TIMEOUT, headers={"User-Agent": S.UA})
+            out["extraCalls"] += 1
+            m = re.search(r"returnReasonCode\D{0,6}(\d+)", r.text)
+            e = re.search(r"errMsg[\"'>:\s]*([A-Z_]+)", r.text)
+            out["probes"][label] = {"httpStatus": r.status_code,
+                                    "code": m.group(1) if m else None,
+                                    "errMsg": e.group(1) if e else None}
+        except Exception as ex:                              # noqa: BLE001
+            out["probes"][label] = {"error": type(ex).__name__}
+        time.sleep(S.SLEEP)
+    return out
 
 
 # ══════════════════════ §5 스키마 ══════════════════════
@@ -317,6 +377,12 @@ def crosscheck(cli):
 
 # ══════════════════════ §10·§11 probe 판정 ══════════════════════
 def probe_verdict(cred, hist, schema, dp, cc, source_alive):
+    # historical_coverage 가 기록한 통제연도 결과를 쓴다. 필드가 없는 옛 evidence
+    # 는 "행 하나라도 받았으면 인증은 실효했다" 로 보수적으로 되돌린다.
+    auth_effective = hist.get("authEffective")
+    if auth_effective is None:
+        auth_effective = any(v.get("rows", 0) > 0
+                             for v in (hist.get("byYear") or {}).values())
     checks = [
         ("CREDENTIAL", cred["status"] == "PRESENT"),
         ("ENDPOINT_ALIVE", bool(source_alive)),
@@ -337,6 +403,12 @@ def probe_verdict(cred, hist, schema, dp, cc, source_alive):
     failed = [n for n, ok in checks if not ok]
     if cred["status"] != "PRESENT":
         verdict = "CREDENTIAL_ABSENT"
+    elif not auth_effective:
+        # 키는 있는데 통제연도조차 못 받았다 → 인증이 실효하지 않은 것이다.
+        # 원인(키 오류 / 활용신청 미승인 / 포털 반영 지연)은 응답으로 구분되지
+        # 않는다 — 게이트웨이가 무효키·빈키·정상키에 같은 코드를 준다.
+        # 그래서 "키가 틀렸다" 고 단정하지 않고 "실효하지 않았다" 로만 적는다.
+        verdict = "CREDENTIAL_NOT_EFFECTIVE"
     elif not hist.get("fullPeriodPass"):
         verdict = ("PROBE_PASS_2010_PLUS_ONLY"
                    if any(v.get("rows") for k, v in hist.get("byYear", {}).items()
@@ -349,8 +421,13 @@ def probe_verdict(cred, hist, schema, dp, cc, source_alive):
         verdict = "PROBE_FAIL"
     else:
         verdict = "PROBE_PASS_FULL_PERIOD"
+    # 인증이 실효하지 않았으면 데이터 축들은 "실패" 가 아니라 "미측정" 이다.
+    # 둘을 같은 칸에 적으면 소스가 부적합한 것처럼 읽힌다.
+    not_measured = ([n for n in failed if n not in ("CREDENTIAL",)]
+                    if verdict == "CREDENTIAL_NOT_EFFECTIVE" else [])
     return {"checks": {n: ok for n, ok in checks},
             "failedChecks": failed,
+            "notMeasuredChecks": not_measured,
             "verdict": verdict,
             "fullAcquisitionAllowed": verdict == "PROBE_PASS_FULL_PERIOD",
             "rule": "하나라도 material 하게 실패하면 전체수집 시작 금지(§10)."}
@@ -413,6 +490,21 @@ def main() -> int:
 
     cli = S.Client()
     hist = historical_coverage(cli, days, samples)
+    if not hist.get("authEffective"):
+        disc = auth_discrimination(True)
+        m = re.search(r"API_ERROR:(\d+)", str(hist.get("controlYearStatus") or ""))
+        ctrl_code = m.group(1) if m else None
+        codes = {v.get("code") for v in disc["probes"].values() if v.get("code")}
+        disc["controlYearCode"] = ctrl_code
+        disc["gatewayDiscriminates"] = bool(
+            ctrl_code and codes and ctrl_code not in codes)
+        disc["conclusion"] = (
+            "게이트웨이가 인증 상태를 구분한다 — 정상키 응답을 신뢰할 수 있다."
+            if disc["gatewayDiscriminates"] else
+            "무효키·빈키와 같은 코드다 — 응답으로 키 유효성도 소스 한계도 "
+            "판별할 수 없다. 소스 부적합으로 단정하지 않는다.")
+        hist["authDiscrimination"] = disc
+        save("auth-discrimination", {**base, **disc})
     schema = schema_check(hist)
     dp = delisted_preferred(cli, hist, samples)
     cc = crosscheck(cli)

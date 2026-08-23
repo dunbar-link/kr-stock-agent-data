@@ -301,6 +301,40 @@ def t_l4():
        va["verdict"] == "PROBE_PASS_FULL_PERIOD")
     ck("§12 그때만 전체수집 허용", va["fullAcquisitionAllowed"] is True)
 
+    # §6 역방향 — API_ERROR 는 coverage FAIL 이 아니다.
+    #   통제연도까지 전멸이면 "historical 없음" 이 아니라 "인증 미실효" 다.
+    hist_dead = {"byYear": {str(y): {"rows": 0,
+                                     "status": "API_ERROR:10:INVALID_REQUEST_"
+                                               "PARAMETER_ERROR"}
+                            for y in P.PROBE_YEARS},
+                 "fullPeriodPass": False, "authEffective": False,
+                 "controlYear": P.CONTROL_YEAR}
+    vn = P.probe_verdict({"status": "PRESENT"}, hist_dead, empty, dp, cc, True)
+    ck("§6역 통제연도 전멸 → CREDENTIAL_NOT_EFFECTIVE",
+       vn["verdict"] == "CREDENTIAL_NOT_EFFECTIVE", vn["verdict"])
+    ck("§6역 그래도 전체수집 금지", vn["fullAcquisitionAllowed"] is False)
+    ck("§6역 데이터 축은 FAIL 이 아니라 미측정",
+       "HISTORICAL_2007_2009" in (vn.get("notMeasuredChecks") or []))
+    ck("§6역 소스 부적합으로 단정 금지",
+       vn["verdict"] not in ("PROBE_FAIL_NO_HISTORY",
+                             "PROBE_PASS_2010_PLUS_ONLY",
+                             "NO_TRADED_VALUE", "NO_DELISTED_HISTORY"))
+
+    # 통제연도가 살아 있으면 옛 연도 부재는 진짜 소스 한계다 — 이 길은 막지 않는다.
+    # 통제연도(2026)가 살아 있으면 정의상 2010+ 는 있으므로 §11-B 로 간다.
+    hist_live = {"byYear": {"2007": {"rows": 0}, "2008": {"rows": 0},
+                            "2009": {"rows": 0},
+                            str(P.CONTROL_YEAR): {"rows": 2000}},
+                 "fullPeriodPass": False, "authEffective": True}
+    vl = P.probe_verdict({"status": "PRESENT"}, hist_live, empty, dp, cc, True)
+    ck("§11-B 통제연도 정상 + 2007~2009 부재 → 소스 한계 판정 유지",
+       vl["verdict"] == "PROBE_PASS_2010_PLUS_ONLY", vl["verdict"])
+    ck("§11-B 소스 한계일 때는 미측정으로 흐리지 않는다",
+       not vl.get("notMeasuredChecks"))
+
+    ck("§6역 통제연도 정본 = 최신 probe 연도",
+       P.CONTROL_YEAR == max(P.PROBE_YEARS))
+
     ck("§9 교차검증 허용오차 사전 고정",
        P.VOLUME_EXACT_MATCH_MIN == 0.99
        and P.TRADED_VALUE_MEDIAN_ERR_MAX == 0.01)

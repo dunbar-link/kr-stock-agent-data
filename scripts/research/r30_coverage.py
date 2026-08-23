@@ -100,8 +100,9 @@ def cause_separation(need, have, scan, progress):
     if early:
         causes.append({"cause": "API_HISTORICAL_LIMITATION",
                        "detail": f"2010 이전 미확보 연도 {early}"})
-    if progress.get("aborted", "").startswith("DAILY_QUOTA") or \
-       progress.get("rateLimitHits", 0) > 0:
+    # 키가 있는데 값이 None 인 경우가 있다 — 기본값만으로는 못 막는다.
+    if (progress.get("aborted") or "").startswith("DAILY_QUOTA") or \
+       (progress.get("rateLimitHits") or 0) > 0:
         causes.append({"cause": "RATE_LIMIT",
                        "detail": f"quota/rate 이벤트 "
                                  f"{progress.get('rateLimitHits', 0)} · "
@@ -119,6 +120,43 @@ def cause_separation(need, have, scan, progress):
         causes.append({"cause": "TICKER_COVERAGE",
                        "detail": "일자는 받았으나 종목 coverage 부족"})
     return causes
+
+
+def stitching_options(need):
+    """threshold 를 건드리지 않고 gate 를 넘을 수 있는 조합을 산술로만 본다.
+
+    기준을 바꾸는 것이 아니다. R27 이 이미 정해 둔 "연도별 90% + 최소 15개
+    연도" 를 그대로 두고, 어느 시작일부터면 15개 연도가 확보되는지 센다.
+    시작일은 실측(공식 API)과 문서(KRX Open API) 근거를 각각 표기한다.
+    """
+    opts = []
+    for start, label, basis in (
+            (_history_start() or "2020-01-02",
+             "PUBLIC_DATA_PORTAL 단독", "실측 (이분탐색 확정)"),
+            ("2010-01-04", "+ KRX_OFFICIAL_OPEN_API stitching",
+             "R29 문서 근거 — 실측 아님(AUTH_KEY 부재)"),
+            ("2007-01-02", "R27 요구 전체 구간", "R27 precommit")):
+        days = [d for d in need if d >= start]
+        years = sorted({d[:4] for d in days})
+        opts.append({"startDate": start, "label": label, "basis": basis,
+                     "days": len(days), "years": len(years),
+                     "meetsMinYears": len(years) >= COVERAGE["minYearsCovered"]})
+    return {"minYearsRequired": COVERAGE["minYearsCovered"],
+            "thresholdChanged": False,
+            "options": opts,
+            "note": ("기준을 낮춘 것이 아니라 원래 기준으로 센 것이다. "
+                     "2007~2009 를 못 채워도 15개 연도는 충족될 수 있다.")}
+
+
+def _history_start():
+    p = RD / "r30-history-start-probe-latest.json"
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+    return d.get("historyStartDate") if d.get("verified") else None
 
 
 def main() -> int:
@@ -172,6 +210,8 @@ def main() -> int:
            "r27AnalysisAllowed": gate_pass,
            "note": ("eligible 종목 대비 연도별 coverage 는 R27 분석기가 계산한다 "
                     "— 같은 계산을 두 번 구현하지 않는다(§16)."),
+           "sourceHistoryStart": _history_start(),
+           "stitching": stitching_options(need),
            "causes": [] if gate_pass else
            cause_separation(need, have, scan, progress)}
     RD.mkdir(parents=True, exist_ok=True)

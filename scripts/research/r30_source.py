@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from urllib.parse import unquote
@@ -45,12 +46,31 @@ ENDPOINT = ("https://apis.data.go.kr/1160100/service/"
 OPERATOR = "금융위원회 / 공공데이터포털"
 LICENSE = "이용허락범위 제한 없음 (공공데이터 개방 · 무료 · 자동승인)"
 
-# 공식 문서 실측(2026-08-23): 개발계정 일 10,000 호출 · 갱신 일 1회
-# (기준일 다음 영업일 13시 이후). numOfRows 10000 사용 사례 확인.
-DAILY_CALL_QUOTA = 10000
-MAX_ROWS_PER_PAGE = 10000
+# ── 호출 예산과 페이지 크기는 **다른 것**이다 (2026-08-23 교정) ──────
+#   초판은 둘을 같은 10000 으로 묶어 두어 한쪽을 고치면 다른 쪽이 따라
+#   움직였다. 의미가 다르므로 분리한다.
+#     DAILY_CALL_QUOTA  = 하루에 몇 번 부를 수 있나 (계정 한도)
+#     MAX_ROWS_PER_PAGE = 한 번에 몇 행을 받을 수 있나 (요청 파라미터 상한)
+DAILY_CALL_QUOTA = 10000        # 공식 문서: 개발계정 일 10,000 호출
+MAX_ROWS_PER_PAGE = 10000       # 2026-08-23 실측: 10/100/1000/2000/10000 모두 OK
+#   실측 근거 — basDt=20260803 전종목 2,872행이 numOfRows=10000 한 콜에
+#   전부 들어왔다(반환 2872 = totalCount). 즉 하루치 = 1콜이다.
+#   그래도 상한을 신뢰하지 않고, 페이지 크기 오류가 나면 절반으로 낮춰
+#   재시도한다(adaptive fallback). 추정값을 고정하지 않기 위해서다.
+PAGE_SIZE_FALLBACKS = (10000, 5000, 2000, 1000, 500, 100)
 
-UA = "Mozilla/5.0 (research; contact=wababa)"
+# ── User-Agent (2026-08-23 근본원인 교정) ────────────────────────────
+#   ★ 초판의 UA `Mozilla/5.0 (research; contact=wababa)` 를 붙이면
+#     data.go.kr 게이트웨이가 **INVALID_REQUEST_PARAMETER_ERROR(코드 10)** 로
+#     거부한다. 파라미터·인증키는 멀쩡한데도 그렇다. 같은 요청에서 UA 만
+#     빼거나 평범한 값으로 바꾸면 즉시 `NORMAL SERVICE` 다(실측 대조 3종).
+#
+#     이 UA 는 R29 probe 에서 물려받은 것이고, R29 가 "미인증이라 코드 10"
+#     이라고 읽었던 응답도 실은 이 UA 때문이었을 수 있다. 코드 10 을 인증
+#     문제로 해석하면 안 되는 이유가 여기 있다.
+#
+#     그래서 커스텀 UA 를 쓰지 않는다. requests 기본 UA 로 보낸다.
+UA = None                       # None = requests 기본 UA 사용
 TIMEOUT = 30
 
 # ── credential (§1·§2) — 기존 규약 재사용. 새 env 구조를 만들지 않는다 ──
@@ -95,6 +115,35 @@ class SchemaMismatch(RuntimeError):
 
 
 # ══════════════════════ credential (값 출력 0) ══════════════════════
+def _read_windows_user_env():
+    """Windows 사용자 환경변수를 **읽기만** 한다. 쓰지 않는다.
+
+    왜 필요한가: 대장이 `setx` 로 키를 넣어도 **이미 열려 있던 터미널의
+    프로세스 환경에는 반영되지 않는다.** 그 상태에서 `os.environ` 만 보면
+    등록된 키를 ABSENT 로 오판한다(2026-08-23 실제로 그랬다). 새 저장소를
+    만드는 게 아니라 대장이 이미 쓴 그 자리를 그대로 읽는 것이다.
+    """
+    if sys.platform != "win32":
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    out = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            for name in CRED_ENV_ALIASES:
+                try:
+                    val, _ = winreg.QueryValueEx(k, name)
+                except OSError:
+                    continue
+                if isinstance(val, str) and val.strip():
+                    out[name] = val.strip()
+    except OSError:
+        return {}
+    return out
+
+
 def _read_env_local():
     """.env.local 에서 이름→값. 값은 반환만 하고 절대 로그로 내보내지 않는다."""
     if not ENV_LOCAL.exists():
@@ -121,10 +170,12 @@ def credential_status():
     길이 하나는 필요하다. 길이만으로 키를 복원할 수 없다.
     """
     envmap = _read_env_local()
+    winmap = _read_windows_user_env()
     checked = []
     for name in CRED_ENV_ALIASES:
         for origin, val in (("process-env", os.environ.get(name)),
-                            (".env.local", envmap.get(name))):
+                            (".env.local", envmap.get(name)),
+                            ("windows-user-env", winmap.get(name))):
             checked.append({"envVarName": name, "origin": origin,
                             "present": bool((val or "").strip())})
             if (val or "").strip():
@@ -141,8 +192,10 @@ def credential_status():
 def service_key():
     """실제 키. 반환값은 호출자가 절대 출력하지 않는다."""
     envmap = _read_env_local()
+    winmap = _read_windows_user_env()
     for name in CRED_ENV_ALIASES:
-        for val in (os.environ.get(name), envmap.get(name)):
+        for val in (os.environ.get(name), envmap.get(name),
+                    winmap.get(name)):
             if (val or "").strip():
                 # 포털은 Encoding/Decoding 두 형태를 준다. requests 가 다시
                 # 인코딩하므로 미리 unquote 해 두면 두 형태 모두 정상 동작한다.
@@ -167,8 +220,11 @@ class Client:
         self.quota = quota
         self.retries = 0
         self.rateLimitHits = 0
+        self.pageSizeDowngrades = 0
+        self.effectivePageSize = MAX_ROWS_PER_PAGE
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": UA})
+        if UA:                      # None 이면 requests 기본 UA 를 그대로 쓴다
+            self.session.headers.update({"User-Agent": UA})
 
     # ── 저수준 1콜 ─────────────────────────────────────────────
     def _get(self, params):
@@ -221,20 +277,47 @@ class Client:
         return None, _scrub(last)
 
     # ── 페이지 하나 ────────────────────────────────────────────
-    def page(self, *, bas_dt=None, ticker=None, rows=MAX_ROWS_PER_PAGE,
+    def page(self, *, bas_dt=None, ticker=None, rows=None,
              page_no=1, begin=None, end=None):
-        params = {"numOfRows": rows, "pageNo": page_no}
+        """한 페이지. 페이지 크기 상한을 추정으로 고정하지 않고 낮춰가며 맞춘다.
+
+        `rows` 를 주지 않으면 현재 유효 페이지 크기를 쓴다. 파라미터 오류
+        (코드 10) 가 나면 **한 단계 작은 크기로 낮춰 재시도**한다. 이때
+        낮아진 크기는 이 클라이언트에 기억돼 다음 호출부터 그대로 쓰인다 —
+        같은 실패를 4,640번 반복하지 않기 위해서다.
+        """
+        base = {}
         if bas_dt:
-            params["basDt"] = bas_dt.replace("-", "")
+            base["basDt"] = bas_dt.replace("-", "")
         if begin:
-            params["beginBasDt"] = begin.replace("-", "")
+            base["beginBasDt"] = begin.replace("-", "")
         if end:
-            params["endBasDt"] = end.replace("-", "")
+            base["endBasDt"] = end.replace("-", "")
         if ticker:
-            params["likeSrtnCd"] = ticker
-        j, st = self._get(params)
+            base["likeSrtnCd"] = ticker
+
+        explicit = rows is not None
+        size = rows if explicit else self.effectivePageSize
+        ladder = ([size] if explicit else
+                  [s for s in PAGE_SIZE_FALLBACKS if s <= size] or [size])
+        st = "UNKNOWN"
+        j = None
+        for attempt_size in ladder:
+            j, st = self._get({**base, "numOfRows": attempt_size,
+                               "pageNo": page_no})
+            if st == "OK":
+                if not explicit and attempt_size != self.effectivePageSize:
+                    self.effectivePageSize = attempt_size
+                    self.pageSizeDowngrades += 1
+                size = attempt_size
+                break
+            # 파라미터 오류만 페이지 크기 문제일 수 있다. 인증·트래픽 오류는
+            # 크기를 줄여도 달라지지 않으므로 즉시 포기한다.
+            if not st.startswith("API_ERROR:10"):
+                break
         if st != "OK":
-            return None, st, {}
+            return None, st, {"triedPageSizes": ladder}
+        rows = size
         body = ((j.get("response") or {}).get("body") or {})
         items = (body.get("items") or {}).get("item") or []
         if isinstance(items, dict):

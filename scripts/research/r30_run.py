@@ -33,9 +33,9 @@ ROOT = HERE.parents[1]
 RD = ROOT / "reports" / "research"
 
 
-def run_step(module):
+def run_step(module, extra_args=()):
     """같은 인터프리터로 하위 단계를 돌린다. 반환코드와 마지막 줄을 남긴다."""
-    p = subprocess.run([sys.executable, str(HERE / f"{module}.py")],
+    p = subprocess.run([sys.executable, str(HERE / f"{module}.py"), *extra_args],
                        capture_output=True, text=True, encoding="utf-8",
                        errors="replace", cwd=str(ROOT))
     tail = [ln for ln in (p.stdout or "").strip().splitlines() if ln.strip()]
@@ -87,7 +87,11 @@ REASONS = {
     # 단정하지 않고 Founder 활성화 확인 대기로 둔다.
     "CREDENTIAL_NOT_EFFECTIVE": (
         "WAIT", "R30_CREDENTIAL_NOT_EFFECTIVE_PENDING_FOUNDER_ACTIVATION"),
-    "PROBE_PASS_2010_PLUS_ONLY": ("BLOCKED", "R30_PRIMARY_FULL_PERIOD_FAIL_2007_2009_MISSING"),
+    # 소스가 요구 구간 전체를 덮지 못한다. 시작일은 reason_class 에 박지 않고
+    # evidence(historyStart)에 실측값으로 남긴다 — 이름에 숫자를 박으면
+    # 실측과 어긋났을 때 그대로 굳는다(구 PROBE_PASS_2010_PLUS_ONLY 의 교훈).
+    "PROBE_PASS_PARTIAL_PERIOD_ONLY": (
+        "BLOCKED", "R30_PRIMARY_FULL_PERIOD_FAIL_SOURCE_HISTORY_TOO_SHORT"),
     "PROBE_FAIL_NO_HISTORY": ("BLOCKED", "R30_PRIMARY_NO_HISTORICAL_COVERAGE"),
     "NO_TRADED_VALUE": ("BLOCKED", "R30_TRADED_VALUE_FIELD_MISSING"),
     "NO_DELISTED_HISTORY": ("BLOCKED", "R30_DELISTED_HISTORY_NOT_SUPPORTED"),
@@ -113,7 +117,10 @@ def main() -> int:
     #   probe 가 막혔어도 두 단계를 **호출은 한다.** 각자 스스로 게이트를
     #   확인하고 NOT_STARTED 를 기록한다. 그래야 "얼마나 못 받았는지"가
     #   evidence 로 남는다 — 파일을 아예 안 만들면 그 사실을 잃는다.
-    steps.append(run_step("r30_acquire"))
+    # 부분수집 opt-in 은 그대로 전달한다. 전달하지 않으면 r30_acquire 가
+    # NOT_STARTED 를 다시 기록해 **이미 받아 둔 진행 evidence 를 지운다.**
+    steps.append(run_step("r30_acquire",
+                          ["--partial"] if "--partial" in sys.argv else []))
     acquired = read("r30-acquisition-progress")
     steps.append(run_step("r30_coverage"))
     coverage = read("r30-final-coverage")
@@ -170,6 +177,7 @@ def main() -> int:
         "probeNotMeasuredChecks": sv.get("notMeasuredChecks", []),
         "authEffective": (read("r30-historical-coverage-probe")
                           .get("authEffective")),
+        "historyStart": sv.get("historyStart"),
         "fullAcquisitionExecuted": bool(acquired.get("newlyAcquiredDays")),
         "requiredDays": coverage.get("requiredDays") or acquired.get("requiredDays"),
         "inheritedDays": coverage.get("daysInheritedFromR27")
@@ -197,6 +205,15 @@ def main() -> int:
                        "scheduler": "untouched", "autoApply": "untouched",
                        "autoPublish": "untouched",
                        "krxWebAutomation": 0, "pykrxBulk": 0},
+        "credentialRotation": {
+            "status": "ROTATION_REQUIRED_AFTER_R30",
+            "exposedThisSession": 0,
+            "actionTakenByClaude": "NONE",
+            "why": "R30 이전 인수인계 과정에서 외부 표면에 노출 이력. 재발급·"
+                   "폐기·env 변경은 §15 승인 게이트라 실행하지 않았다.",
+            "recommendedTiming": "R27 판정 완료 후"},
+        "acquisitionMode": acquired.get("acquisitionMode"),
+        "partialWindowStart": acquired.get("partialWindowStart"),
         "forbidden": {"portfolioOptimization": False, "newFactorResearch": False,
                       "newTaxonomy": False, "thresholdChanged": False},
     }

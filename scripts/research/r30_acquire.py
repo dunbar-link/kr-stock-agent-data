@@ -48,15 +48,40 @@ def save_progress(obj):
     return obj
 
 
-def probe_allows():
+def _source_verdict():
     p = RD / "r30-source-verdict-latest.json"
     if not p.exists():
-        return False, "PROBE_NOT_RUN"
+        return None
     try:
-        v = json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError):
-        return False, "PROBE_UNREADABLE"
+        return None
+
+
+def probe_allows():
+    v = _source_verdict()
+    if v is None:
+        return False, "PROBE_NOT_RUN"
     return bool(v.get("fullAcquisitionAllowed")), v.get("verdict", "UNKNOWN")
+
+
+def partial_window():
+    """소스가 실제로 덮는 구간만 받는 부분수집 창(§8).
+
+    probe 가 PARTIAL_PERIOD_ONLY 일 때만 열린다. 요구 구간 전체를 못 덮는다는
+    사실을 숨기지 않으면서, **덮는 부분은 실제로 확보**하기 위한 것이다.
+    시작일은 추정하지 않고 probe 가 이분탐색으로 실측한 값을 그대로 쓴다.
+
+    R27 분석을 여는 것과는 무관하다 — coverage gate 는 그대로 적용된다.
+    """
+    v = _source_verdict() or {}
+    if v.get("verdict") != "PROBE_PASS_PARTIAL_PERIOD_ONLY":
+        return None, "NOT_PARTIAL_VERDICT"
+    hs = v.get("historyStart") or {}
+    start = hs.get("historyStartDate")
+    if not start or not hs.get("verified"):
+        return None, "HISTORY_START_UNVERIFIED"
+    return start, "OK"
 
 
 def inherit_reuse_allowed():
@@ -72,8 +97,19 @@ def inherit_reuse_allowed():
 
 
 def main() -> int:
+    # 부분수집은 **명시적으로 켤 때만** 열린다. 기본값은 종전대로 probe PASS
+    # 게이트다 — 요구 구간을 못 덮는 소스로 조용히 채워 넣지 않기 위해서다.
+    partial_opt_in = "--partial" in sys.argv
     allowed, pverdict = probe_allows()
     need, cal_n, dec_n = required_days()
+    partial_start = None
+    if not allowed and partial_opt_in:
+        partial_start, pstat = partial_window()
+        if partial_start:
+            need = [d for d in need if d >= partial_start]
+            allowed = True
+        else:
+            print(f"[r30] 부분수집 불가: {pstat}", file=sys.stderr)
     inherited = sorted(d for d in need if d in K.r27_have_days())
     reuse, cc_status = inherit_reuse_allowed()
 
@@ -84,7 +120,16 @@ def main() -> int:
             "lookAheadRule": "결정일 직전 20거래일만(§8) — R27 정의 재사용",
             "inheritedR27Days": len(inherited),
             "inheritReuseAllowed": reuse, "crosscheckStatus": cc_status,
-            "probeVerdict": pverdict}
+            "probeVerdict": pverdict,
+            "acquisitionMode": ("PARTIAL_SOURCE_WINDOW" if partial_start
+                                else "FULL_REQUIRED_WINDOW"),
+            "partialWindowStart": partial_start,
+            "partialWindowDays": len(need) if partial_start else None,
+            "requiredDaysFullWindow": len(required_days()[0]),
+            "partialWindowWhy": (
+                "소스가 요구 구간 전체를 못 덮는다. 덮는 구간만 받되 coverage "
+                "gate 는 전체 구간 기준 그대로 적용한다(§8·§9)."
+                if partial_start else None)}
 
     if not allowed:
         out = {**base, "status": "NOT_STARTED_PROBE_GATE",
@@ -125,8 +170,12 @@ def main() -> int:
             rows, st, meta = None, f"SCHEMA:{e}", {}
         if st == "OK" and rows:
             K.write_day(d, rows)
-            # R27 이 그대로 읽도록 투영. 상속 재사용이면 기존 파일 보존.
-            r = K.project_to_r27(d, rows, overwrite=not reuse)
+            # R27 이 그대로 읽도록 투영. 기존 R27 파일은 **교차검증이 실제로
+            # 불일치를 증명했을 때만** 덮는다. 겹치는 날짜가 없어 검증 자체가
+            # 불가능했던 경우(INSUFFICIENT_OVERLAP)에 검증된 데이터를 미검증
+            # 데이터로 갈아끼우면 근거 없이 품질을 낮추는 것이다.
+            r = K.project_to_r27(d, rows,
+                                 overwrite=(cc_status == "MATERIAL_MISMATCH"))
             projected[r] = projected.get(r, 0) + 1
             ck["completed_days"].append(d)
             ck["last_success"] = d

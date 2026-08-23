@@ -376,6 +376,62 @@ def crosscheck(cli):
 
 
 # ══════════════════════ §10·§11 probe 판정 ══════════════════════
+def discover_history_start(cli, cal, hist):
+    """소스가 실제로 데이터를 주기 시작하는 첫 거래일을 **실측**한다(§3).
+
+    "2007 이 안 나온다" 로 끝내면 어디부터 되는지를 모른다. 그러면 다음 라운드가
+    다시 처음부터 뒤져야 한다. 그래서 경계를 이분탐색으로 한 번만 확정한다.
+    비용은 log2(거래일수) ≈ 12콜 수준이다.
+
+    이분탐색이 성립하는 전제: 시작일 이후로는 데이터가 연속 존재한다.
+    그래서 경계 확정 뒤 **바로 다음 거래일 2개를 추가 확인**해 단발 구멍이
+    아님을 검증한다. 검증이 깨지면 경계를 확정하지 않고 UNVERIFIED 로 남긴다.
+    """
+    out = {"method": "binary search over cached trading calendar",
+           "calls": 0, "probes": [], "historyStartDate": None,
+           "verified": False}
+    ok_days = sorted(v["probeDate"] for v in (hist.get("byYear") or {}).values()
+                     if v.get("rows", 0) > 0)
+    if not ok_days:
+        out["status"] = "NOT_MEASURABLE_NO_POSITIVE_PROBE"
+        return out
+    try:
+        hi = cal.index(ok_days[0])
+    except ValueError:
+        out["status"] = "CALENDAR_MISMATCH"
+        return out
+    lo = 0                                   # 캘린더 시작 = 확실히 없는 쪽 후보
+
+    def rows_at(i):
+        items, st, meta = cli.page(bas_dt=cal[i], rows=1)
+        out["calls"] += 1
+        n = meta.get("totalCount", 0) if st == "OK" else -1
+        out["probes"].append({"date": cal[i], "status": st, "totalCount": n})
+        time.sleep(S.SLEEP)
+        return n
+
+    if rows_at(lo) > 0:                      # 캘린더 첫날부터 있으면 그게 시작
+        out.update({"historyStartDate": cal[lo], "verified": True,
+                    "status": "FULL_CALENDAR"})
+        return out
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if rows_at(mid) > 0:
+            hi = mid
+        else:
+            lo = mid
+    start = cal[hi]
+    # 단발 구멍이 아닌지 확인 — 시작 직후 2거래일도 데이터가 있어야 한다
+    nxt = [cal[i] for i in (hi + 1, hi + 2) if i < len(cal)]
+    contiguous = all(rows_at(cal.index(d)) > 0 for d in nxt)
+    out.update({"historyStartDate": start,
+                "lastDateWithoutData": cal[lo],
+                "followUpDates": nxt,
+                "verified": bool(contiguous),
+                "status": "MEASURED" if contiguous else "UNVERIFIED_GAP"})
+    return out
+
+
 def probe_verdict(cred, hist, schema, dp, cc, source_alive):
     # historical_coverage 가 기록한 통제연도 결과를 쓴다. 필드가 없는 옛 evidence
     # 는 "행 하나라도 받았으면 인증은 실효했다" 로 보수적으로 되돌린다.
@@ -410,9 +466,13 @@ def probe_verdict(cred, hist, schema, dp, cc, source_alive):
         # 그래서 "키가 틀렸다" 고 단정하지 않고 "실효하지 않았다" 로만 적는다.
         verdict = "CREDENTIAL_NOT_EFFECTIVE"
     elif not hist.get("fullPeriodPass"):
-        verdict = ("PROBE_PASS_2010_PLUS_ONLY"
-                   if any(v.get("rows") for k, v in hist.get("byYear", {}).items()
-                          if int(k) >= 2010) else "PROBE_FAIL_NO_HISTORY")
+        # 인증은 실효했고 최신 연도는 나오는데 hard 연도가 비었다 =
+        # **소스의 실제 historical 한계**다. 이때만 소스 한계로 판정한다.
+        #   구 이름 PROBE_PASS_2010_PLUS_ONLY 는 시작연도를 2010 으로 못박아
+        #   실측(2020-01-02)과 어긋났다. 시작일은 이름이 아니라 필드로 남긴다.
+        verdict = ("PROBE_PASS_PARTIAL_PERIOD_ONLY"
+                   if any(v.get("rows") for v in hist.get("byYear", {}).values())
+                   else "PROBE_FAIL_NO_HISTORY")
     elif not schema.get("tradedValueFieldPresent"):
         verdict = "NO_TRADED_VALUE"
     elif not dp.get("delistedHistorySupported"):
@@ -430,6 +490,8 @@ def probe_verdict(cred, hist, schema, dp, cc, source_alive):
             "notMeasuredChecks": not_measured,
             "verdict": verdict,
             "fullAcquisitionAllowed": verdict == "PROBE_PASS_FULL_PERIOD",
+            "authEffective": bool(auth_effective),
+            "historyStart": hist.get("historyStart"),
             "rule": "하나라도 material 하게 실패하면 전체수집 시작 금지(§10)."}
 
 
@@ -505,6 +567,10 @@ def main() -> int:
             "판별할 수 없다. 소스 부적합으로 단정하지 않는다.")
         hist["authDiscrimination"] = disc
         save("auth-discrimination", {**base, **disc})
+    if hist.get("authEffective") and not hist.get("fullPeriodPass"):
+        # 인증은 되는데 과거가 비었다 → 어디부터 되는지를 실측해 둔다(§3).
+        hist["historyStart"] = discover_history_start(cli, cal, hist)
+        save("history-start-probe", {**base, **hist["historyStart"]})
     schema = schema_check(hist)
     dp = delisted_preferred(cli, hist, samples)
     cc = crosscheck(cli)

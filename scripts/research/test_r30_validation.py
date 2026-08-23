@@ -60,6 +60,17 @@ def L(n):
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
+def code_only(path):
+    """주석을 걷어낸 실행 코드만. 교정 경위를 적은 주석이 '결함이 남아 있다'
+    로 오탐되지 않게 한다 — 검사 대상은 동작이지 설명문이 아니다."""
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        out.append(line.split("  #")[0])
+    return chr(10).join(out)
+
+
 # ══════════════════ L1 안전 ══════════════════
 def t_l1():
     print("[L1] 안전 · 비밀값 · 금지경로")
@@ -266,8 +277,8 @@ def t_l4():
                          "2009": {"rows": 0}, "2010": {"rows": 100}},
               "fullPeriodPass": False}
     vb = P.probe_verdict({"status": "PRESENT"}, hist_b, empty, dp, cc, True)
-    ck("§11-B 2007~2009 부재 → 2010_PLUS_ONLY",
-       vb["verdict"] == "PROBE_PASS_2010_PLUS_ONLY")
+    ck("§11-B 2007~2009 부재 → PARTIAL_PERIOD_ONLY",
+       vb["verdict"] == "PROBE_PASS_PARTIAL_PERIOD_ONLY", vb["verdict"])
     ck("§11-B 그래도 전체수집 금지", vb["fullAcquisitionAllowed"] is False)
 
     # §11-C 거래대금 없음
@@ -317,7 +328,7 @@ def t_l4():
        "HISTORICAL_2007_2009" in (vn.get("notMeasuredChecks") or []))
     ck("§6역 소스 부적합으로 단정 금지",
        vn["verdict"] not in ("PROBE_FAIL_NO_HISTORY",
-                             "PROBE_PASS_2010_PLUS_ONLY",
+                             "PROBE_PASS_PARTIAL_PERIOD_ONLY",
                              "NO_TRADED_VALUE", "NO_DELISTED_HISTORY"))
 
     # 통제연도가 살아 있으면 옛 연도 부재는 진짜 소스 한계다 — 이 길은 막지 않는다.
@@ -328,12 +339,73 @@ def t_l4():
                  "fullPeriodPass": False, "authEffective": True}
     vl = P.probe_verdict({"status": "PRESENT"}, hist_live, empty, dp, cc, True)
     ck("§11-B 통제연도 정상 + 2007~2009 부재 → 소스 한계 판정 유지",
-       vl["verdict"] == "PROBE_PASS_2010_PLUS_ONLY", vl["verdict"])
+       vl["verdict"] == "PROBE_PASS_PARTIAL_PERIOD_ONLY", vl["verdict"])
     ck("§11-B 소스 한계일 때는 미측정으로 흐리지 않는다",
        not vl.get("notMeasuredChecks"))
 
     ck("§6역 통제연도 정본 = 최신 probe 연도",
        P.CONTROL_YEAR == max(P.PROBE_YEARS))
+
+    # ── 2026-08-23 근본원인 회귀 ────────────────────────────────
+    #   커스텀 UA 를 붙이면 게이트웨이가 코드 10 으로 거부했다. 실측으로
+    #   확인한 사실이라 상수로 고정한다. 되살아나면 여기서 잡힌다.
+    ck("근본원인: 커스텀 User-Agent 미사용", S.UA is None, repr(S.UA))
+    src = code_only(SRC / "r30_source.py")
+    ck("근본원인: 거부당한 UA 를 실제로 보내지 않는다",
+       "Mozilla" not in src)
+
+    #   호출 예산과 페이지 크기는 다른 개념이다 — 같은 이름/같은 곳에서
+    #   함께 움직이지 않아야 한다.
+    ck("§3 quota 와 page size 분리",
+       S.DAILY_CALL_QUOTA == 10000 and S.MAX_ROWS_PER_PAGE == 10000
+       and "DAILY_CALL_QUOTA" != "MAX_ROWS_PER_PAGE")
+    ck("§3 page size adaptive fallback 존재",
+       isinstance(S.PAGE_SIZE_FALLBACKS, tuple)
+       and len(S.PAGE_SIZE_FALLBACKS) >= 3
+       and S.PAGE_SIZE_FALLBACKS == tuple(sorted(S.PAGE_SIZE_FALLBACKS,
+                                                 reverse=True)))
+    cli = S.Client.__new__(S.Client)
+    cli.effectivePageSize = S.MAX_ROWS_PER_PAGE
+    ck("§3 유효 페이지 크기는 클라이언트 상태",
+       cli.effectivePageSize == S.MAX_ROWS_PER_PAGE)
+
+    #   코드 10 을 인증 문제로 읽지 않는다 — 파라미터 오류다.
+    ck("§4 코드 10 은 인증 사유로 분류되지 않는다",
+       "CREDENTIAL_INVALID:10" not in src)
+
+    #   setx 직후 재시작 안 한 터미널에서도 키를 찾는다
+    ck("credential: Windows 사용자 환경변수 fallback",
+       hasattr(S, "_read_windows_user_env"))
+    ck("credential: 사용자 환경변수는 읽기 전용",
+       "SetValue" not in src and "DeleteValue" not in src)
+
+    #   시작일은 이름에 박지 않고 실측 필드로 남긴다
+    ck("§3 historyStart 실측 함수 존재",
+       hasattr(P, "discover_history_start"))
+    ck("§3 시작연도를 verdict 이름에 하드코딩 금지",
+       "2010_PLUS_ONLY" not in code_only(SRC / "r30_probe.py"))
+
+    #   부분수집: 명시적 opt-in 일 때만, 시작일은 실측값만 사용
+    import r30_acquire as AQ
+    ck("§8 부분수집은 opt-in 전용",
+       "--partial" in (SRC / "r30_acquire.py").read_text(encoding="utf-8"))
+    ck("§8 부분수집 시작일은 실측 검증본만 사용",
+       "HISTORY_START_UNVERIFIED" in code_only(SRC / "r30_acquire.py"))
+    ck("§8 quota 우회 없음",
+       "DAILY_QUOTA_REACHED" in code_only(SRC / "r30_acquire.py"))
+
+    #   교차검증이 불가능했으면 검증된 R27 캐시를 덮지 않는다
+    ck("§9 검증 불가 시 기존 캐시 미덮어씀",
+       'MATERIAL_MISMATCH' in code_only(SRC / "r30_acquire.py"))
+
+    #   aborted 가 None 이어도 원인분리가 죽지 않는다
+    import r30_coverage as CV
+    causes = CV.cause_separation(
+        ["2007-01-02"], set(), {"rows": 1, "delistedRows": 1,
+                                "tradedValueMissingRows": 0},
+        {"status": "COMPLETE", "aborted": None, "rateLimitHits": None,
+         "failedDays": 0})
+    ck("§17 aborted=None 에도 원인분리 동작", isinstance(causes, list))
 
     ck("§9 교차검증 허용오차 사전 고정",
        P.VOLUME_EXACT_MATCH_MIN == 0.99

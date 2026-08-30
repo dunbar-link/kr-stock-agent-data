@@ -44,8 +44,27 @@ SECONDARY_BENCHMARK_NAME = "KOSPI200"
 SECONDARY_BENCHMARK_CODE = "1028"
 SECONDARY_CACHE_PATH = ROOT / "_cache" / "kospi-index" / f"{SECONDARY_BENCHMARK_CODE}-daily-close.json"
 
+# ── KOSDAQ (WABABA-LEGACY50D-KOSDAQ-BENCHMARK-SWAP-R1) ────────────────────────
+#   코드 2001 은 추측이 아니라 pykrx get_index_ticker_list(market="KOSDAQ") 실측이다
+#   (2026-08-30: 2001 코스닥 = 시장 대표지수 / 2203 코스닥 150 은 별개).
+#   KOSPI(1001) 와 같은 위상의 **시장 대표지수**를 골랐다.
+KOSDAQ_BENCHMARK_NAME = "KOSDAQ"
+KOSDAQ_BENCHMARK_CODE = "2001"
+
 # 공개 표시용 key (public schema·UI 가 함께 쓰는 정본 이름)
-BENCHMARK_KEYS = {BENCHMARK_CODE: "kospi", SECONDARY_BENCHMARK_CODE: "kospi200"}
+BENCHMARK_KEYS = {BENCHMARK_CODE: "kospi", SECONDARY_BENCHMARK_CODE: "kospi200",
+                  KOSDAQ_BENCHMARK_CODE: "kosdaq"}
+
+# ── 메인 그래프에 그릴 지수 (WABABA-LEGACY50D-KOSDAQ-BENCHMARK-SWAP-R1) ────────
+#   2026-08-30 실측: 같은 38점 축에서 KOSPI 대비
+#     KOSPI200  일간수익률 상관 0.9984 · 평균 |차| 1.02%p · 최대 2.06%p
+#     KOSDAQ    일간수익률 상관 0.7094 · 평균 |차| 5.16%p · 최대 14.71%p
+#   KOSPI200 은 사실상 KOSPI 와 같은 선이라 그래프에서 정보를 더하지 못했다.
+#   그래서 **메인 표시는 KOSPI + KOSDAQ**, KOSPI200 은 데이터로만 남긴다
+#   (하위호환 유지 — series·benchmarks 에서 삭제하지 않는다).
+#   주의: 이 선택은 펀드에 유리해서가 아니다. 초과성과는 오히려 줄어든다
+#   (vs KOSPI200 +31.63%p → vs KOSDAQ +25.59%p). 정보량 기준으로 골랐다.
+DISPLAY_BENCHMARK_KEYS = ("kospi", "kosdaq")
 
 CLOSE_COL = "종가"
 DATE_COL = "날짜"
@@ -350,20 +369,30 @@ def build_multi_series(fund_series: list, closes_by_key: dict, *,
             "excessPctPoint": last["fundReturnPct"] - last[f"{k}ReturnPct"],
             "baseClose": base_closes[k],
             "missingDateCount": len(out["missingByKey"][k]),
+            # 메인 그래프 표시 여부. 값은 계속 내려보내되 표시만 끌 수 있다.
+            "display": k in DISPLAY_BENCHMARK_KEYS,
         })
 
     return dict(out, status=STATUS_OK, baseDate=d0,
                 baseDateShifted=(d0 != requested), fundBaseNav=nav0,
-                benchmarks=benchmarks, series=series)
+                benchmarks=benchmarks, series=series,
+                displayKeys=[k for k in keys if k in DISPLAY_BENCHMARK_KEYS])
 
 
 def build_fund_multi_benchmark(state: dict, *, base_date: Optional[str] = None,
                                fetcher: Optional[Callable] = None,
                                use_cache: bool = True,
                                closes_by_key: Optional[dict] = None) -> dict:
-    """canonical state → Fund vs KOSPI vs KOSPI200 동일축 비교 시계열."""
+    """canonical state → Fund vs KOSPI vs KOSDAQ (+KOSPI200 데이터) 동일축 시계열.
+
+    세 지수를 모두 **같은 축**으로 계산하되, 메인 그래프에 그릴 대상은
+    DISPLAY_BENCHMARK_KEYS 로만 표시한다. KOSPI200 은 계산·저장은 계속하고
+    표시만 끈다 — 기존 consumer 가 값을 잃지 않게 하기 위해서다.
+    """
     specs = [
         {"key": "kospi", "name": BENCHMARK_NAME, "code": BENCHMARK_CODE},
+        {"key": "kosdaq", "name": KOSDAQ_BENCHMARK_NAME,
+         "code": KOSDAQ_BENCHMARK_CODE},
         {"key": "kospi200", "name": SECONDARY_BENCHMARK_NAME,
          "code": SECONDARY_BENCHMARK_CODE},
     ]

@@ -397,6 +397,9 @@ def build_benchmark_multi_public(multi: Optional[dict]) -> Optional[dict]:
         "baseDateShifted": bool(multi.get("baseDateShifted")),
         "alignment": multi.get("alignment"),
         "benchmarkKeys": keys,
+        # 메인 그래프에 그릴 지수. 값은 전부 내려보내고 표시만 이걸로 고른다.
+        # 없으면(구 payload) UI 가 전체를 그리므로 하위호환이 유지된다.
+        "displayKeys": list(multi.get("displayKeys") or keys),
         "droppedDateCount": len(multi.get("droppedDates") or []),
         "benchmarks": [], "series": [], "latest": None,
     }
@@ -407,20 +410,33 @@ def build_benchmark_multi_public(multi: Optional[dict]) -> Optional[dict]:
         {"key": b.get("key"), "name": b.get("name"), "code": b.get("code"),
          "latestReturnPct": _r2(b.get("latestReturnPct")),
          "excessPctPoint": _r2(b.get("excessPctPoint")),
-         "missingDateCount": b.get("missingDateCount")}
+         "missingDateCount": b.get("missingDateCount"),
+         "display": bool(b.get("display", True))}
         for b in (multi.get("benchmarks") or [])]
     series = []
     for r in (multi.get("series") or []):
         row = {"date": r["date"], "fundReturnPct": _r2(r["fundReturnPct"])}
         for k in keys:
             row[f"{k}ReturnPct"] = _r2(r.get(f"{k}ReturnPct"))
+            # 초과수익은 **반올림 전 값**에서 한 번만 반올림해 같이 내려보낸다.
+            # 표시 계층이 반올림된 값끼리 빼면 0.01 이 어긋나 같은 화면의
+            # 카드와 tooltip 이 다른 숫자를 보인다(실측: KOSDAQ 25.59 vs 25.60).
+            fv, bv = r.get("fundReturnPct"), r.get(f"{k}ReturnPct")
+            if fv is not None and bv is not None:
+                row[f"excessVs{k[:1].upper()}{k[1:]}PctPoint"] = _r2(fv - bv)
         series.append(row)
     out["series"] = series
     if series:
         last = dict(series[-1])
+        # 초과수익은 **반올림 전 값**에서 한 번만 반올림한다. 이미 반올림된
+        # series 값끼리 빼면 benchmarks[].excessPctPoint 와 0.01 어긋나서
+        # 같은 화면에 두 숫자가 다르게 보인다(실측: KOSDAQ 25.59 vs 25.60).
+        excess_by_key = {b.get("key"): b.get("excessPctPoint")
+                         for b in (multi.get("benchmarks") or [])}
         for k in keys:
+            raw = excess_by_key.get(k)
             last[f"excessVs{k[:1].upper()}{k[1:]}PctPoint"] = _r2(
-                last["fundReturnPct"] - last[f"{k}ReturnPct"])
+                raw if raw is not None else last["fundReturnPct"] - last[f"{k}ReturnPct"])
         out["latest"] = last
     return out
 

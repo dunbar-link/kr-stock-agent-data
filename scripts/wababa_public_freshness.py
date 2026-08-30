@@ -306,11 +306,13 @@ def decide(now: datetime, canonical: dict, public: dict, repo_copy: dict) -> dic
         reasons.append("공개 산출물에 fundDataDate 가 없다 — 필드 누락")
         bump("WARNING")
 
-    # ── 보조 표면 (설계상 같은 기준일을 써야 하는 것들) ──
+    # ── 보조 표면 (설계상 펀드와 같은 거래일을 써야 하는 것들) ──
+    # top-level baseDate 는 전체 추천 데이터의 생성일이다. 주말 08:45 생성처럼
+    # 펀드 장부 거래일과 달라도 정상이며, 홈페이지도 이를 "데이터 기준" 시각과
+    # "장부 기준일"로 분리 표시한다. freshness 정렬 대상에 넣으면 주말마다 오탐한다.
     surface_mismatch = []
     if public.get("ok") and pub_latest:
-        for key in ("dashboardBaseDate", "rankingsDate", "tradeDaysMaxDate",
-                    "benchmarkLatestDate"):
+        for key in ("rankingsDate", "tradeDaysMaxDate", "benchmarkLatestDate"):
             v = public.get(key)
             if v and v != pub_latest:
                 surface_mismatch.append({"surface": key, "date": v})

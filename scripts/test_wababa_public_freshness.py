@@ -200,6 +200,14 @@ def case_canonical_behind():
 # ══════════════ 표면 불일치 ══════════════
 def case_surface_mismatch():
     print("\n[CASE 11] 공개 표면끼리 기준일이 어긋나면 잡는다")
+    weekend_generation = run(
+        kst(2026, 8, 30, 13, 0), canon("2026-08-28"),
+        pub("2026-08-28", dashboardBaseDate="2026-08-30"))
+    ck("생성일 baseDate 는 펀드 거래일과 달라도 정상",
+       weekend_generation["verdict"] == "PASS", weekend_generation["verdict"])
+    ck("dashboardBaseDate 는 펀드 표면 불일치에 포함하지 않음",
+       not any(m["surface"] == "dashboardBaseDate"
+               for m in weekend_generation["publicSurfaceMismatch"]))
     r = run(kst(2026, 8, 28, 18, 0), canon("2026-08-28"),
             pub("2026-08-28", rankingsDate="2026-08-14"))
     ck("PASS 아님", r["verdict"] != "PASS", r["verdict"])

@@ -370,11 +370,20 @@ def _build_official_benchmark(state_path, warn):
     try:
         import kospi_benchmark as _kb
         st = json.loads(Path(state_path).read_text(encoding="utf-8"))
-        return _kb.build_fund_benchmark(st)
+        bench = _kb.build_fund_benchmark(st)
     except Exception as e:  # noqa: BLE001
         if warn:
             warn(f"[WARN] KOSPI 벤치마크 스킵(공개 3키 영향 없음): {type(e).__name__}: {e}")
         return None
+    # 보조 벤치마크(KOSPI200) 는 **부가**다. 실패해도 기존 KOSPI 결과를 그대로 돌려준다
+    # — 여기서 예외가 새면 이미 공개 중인 KOSPI 비교까지 같이 죽는다(fail-open).
+    try:
+        bench["multi"] = _kb.build_fund_multi_benchmark(st)
+    except Exception as e:  # noqa: BLE001
+        if warn:
+            warn(f"[WARN] KOSPI200 보조 벤치마크 스킵(KOSPI 비교 영향 없음): "
+                 f"{type(e).__name__}: {e}")
+    return bench
 
 
 def apply_magic_official_public(enriched, *, state_path=OFFICIAL_STATE_PATH,

@@ -371,6 +371,57 @@ def build_benchmark_public(bench: dict, summary: dict) -> dict:
         if cum is not None and abs(float(cum) - last["fundReturnPct"]) > 0.011:
             raise MappingValidationError(
                 f"benchmark fundReturnPct {last['fundReturnPct']} != summary cumulativeReturn {cum}")
+    # ── 보조 벤치마크 다중 비교(additive) ──────────────────────────────────
+    #   위 KOSPI 필드는 한 글자도 바뀌지 않는다. multi 는 **추가**될 뿐이라
+    #   기존 consumer 는 영향받지 않는다(backward compatible).
+    multi = build_benchmark_multi_public(bench.get("multi"))
+    if multi is not None:
+        out["multi"] = multi
+    return out
+
+
+def build_benchmark_multi_public(multi: Optional[dict]) -> Optional[dict]:
+    """다중 벤치마크(Fund vs KOSPI vs KOSPI200) 표시 모델. 순수 변환.
+
+    축·기준일은 데이터 계층이 이미 inner join 으로 맞춰 놨다. 여기서는 표시용
+    반올림만 한다. 지수 절대값은 넣지 않는다(% 축 하나만 쓴다).
+    """
+    if not multi:
+        return None
+    status = str(multi.get("status") or "UNKNOWN")
+    keys = list(multi.get("benchmarkKeys") or [])
+    out = {
+        "schemaVersion": "magic-official-benchmark-multi-public-v1",
+        "status": status,
+        "baseDate": multi.get("baseDate"),
+        "baseDateShifted": bool(multi.get("baseDateShifted")),
+        "alignment": multi.get("alignment"),
+        "benchmarkKeys": keys,
+        "droppedDateCount": len(multi.get("droppedDates") or []),
+        "benchmarks": [], "series": [], "latest": None,
+    }
+    if status != "OK":
+        out["reason"] = multi.get("reason")
+        return out
+    out["benchmarks"] = [
+        {"key": b.get("key"), "name": b.get("name"), "code": b.get("code"),
+         "latestReturnPct": _r2(b.get("latestReturnPct")),
+         "excessPctPoint": _r2(b.get("excessPctPoint")),
+         "missingDateCount": b.get("missingDateCount")}
+        for b in (multi.get("benchmarks") or [])]
+    series = []
+    for r in (multi.get("series") or []):
+        row = {"date": r["date"], "fundReturnPct": _r2(r["fundReturnPct"])}
+        for k in keys:
+            row[f"{k}ReturnPct"] = _r2(r.get(f"{k}ReturnPct"))
+        series.append(row)
+    out["series"] = series
+    if series:
+        last = dict(series[-1])
+        for k in keys:
+            last[f"excessVs{k[:1].upper()}{k[1:]}PctPoint"] = _r2(
+                last["fundReturnPct"] - last[f"{k}ReturnPct"])
+        out["latest"] = last
     return out
 
 

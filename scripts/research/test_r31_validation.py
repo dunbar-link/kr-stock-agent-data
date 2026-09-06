@@ -317,8 +317,65 @@ def t_l6():
         notrun(n, why)
 
 
+# ══════════════ L7 service probe ══════════════
+def t_l7():
+    print("\n[L7] service probe (§5)")
+    probe = SRC / "r31_probe.py"
+    if not probe.exists():
+        notrun("50 probe 모듈", "아직 없음")
+        return
+    s = probe.read_text(encoding="utf-8")
+    ck("50 AUTH_KEY 를 Request Header 로만 전달",
+       'headers = {"AUTH_KEY": key}' in s and "params=params" in s)
+    ck("51 키를 쿼리스트링에 넣지 않음",
+       not re.search(r"(?i)(serviceKey|auth_?key)\s*[=:]\s*[^\n]*params", s)
+       or 'headers = {"AUTH_KEY": key}' in s)
+    # 주석에서 R30 User-Agent 사고를 언급하는 것은 정상이다. 실제로 헤더를
+    # **설정하는 코드**가 없어야 한다 — 주석을 제거하고 본다.
+    code = "\n".join(re.sub(r"#.*$", "", ln) for ln in s.splitlines())
+    ck("52 custom User-Agent 강제 없음(코드 기준)",
+       not re.search(r"(?i)[\"']user-agent[\"']\s*:", code))
+    ck("53 전체 헤더·전체 URL 출력 코드 없음",
+       not re.search(r"print\([^)]*headers|print\([^)]*r\.url", s))
+    ck("54 응답 본문에 키가 반사돼도 마스킹",
+       "_mask(" in s and "REDACTED_AUTH_KEY" in s)
+    ck("55 circuit breaker 존재(auth/승인/429 즉시 중단)",
+       "RATE_LIMITED" in s and "AUTH_OR_APPROVAL_401" in s
+       and "NOT_PROBED_CIRCUIT_OPEN" in s)
+    ck("56 401 을 한쪽으로 단정하지 않고 대조로 판별",
+       "def discriminate(" in s and "INDISTINGUISHABLE" in s)
+    ck("57 probe 단계에서 bulk 수집 안 함",
+       '"collectionStarted": False' in s and "needed_days" not in s)
+    ck("58 retry 도 예산에 포함", "spend(retry=" in s)
+    ck("59 코스닥 endpoint 를 검증 전에 정본화하지 않음",
+       "KOSDAQ_CANDIDATES" in s and "endpointVerified" in s)
+
+    art = RD / "r31-service-probe-latest.json"
+    if not art.exists():
+        notrun("60 probe 산출물", "probe 미실행")
+        return
+    d = json.loads(art.read_text(encoding="utf-8"))
+    ck("60 probe 산출물 parse + 수집 미착수 기록",
+       d.get("collectionStarted") is False)
+    ck("61 예산이 상한 이내",
+       d["budget"]["calls"] <= d["budget"]["cap"], str(d["budget"]))
+    ck("62 산출물에 키 값 미포함",
+       _no_key_in(art.read_text(encoding="utf-8")))
+    ck("63 endpointVerified 는 실제 성공에서만 True",
+       (d["kospi"]["endpointVerified"] is True) == (d["kospi"]["status"] == "OK"))
+
+
+def _no_key_in(text: str) -> bool:
+    """실제 등록된 키가 텍스트에 없는지. 값은 출력하지 않는다."""
+    try:
+        k = CRED.auth_key()
+    except CRED.CredentialAbsent:
+        return True
+    return k not in text
+
+
 def main() -> int:
-    for f in (t_l1, t_l2, t_l3, t_l4, t_l5, t_l6):
+    for f in (t_l1, t_l2, t_l3, t_l4, t_l5, t_l6, t_l7):
         f()
     print(f"\n결과: PASS {PASS} / FAIL {FAIL} / NOT_RUN {NOTRUN}")
     print(f"verdict: {'PASS' if FAIL == 0 else 'FAIL'}")

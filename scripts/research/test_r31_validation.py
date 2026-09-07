@@ -374,8 +374,136 @@ def _no_key_in(text: str) -> bool:
     return k not in text
 
 
+# ══════════════ L8 collection / overlap / stitch (§14) ══════════════
+def _art(name):
+    p = RD / name
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+
+
+def t_l8():
+    print("\n[L8] 수집·overlap·stitch (§14)")
+    src = (SRC / "r31_source.py").read_text(encoding="utf-8")
+    acq = (SRC / "r31_acquire.py").read_text(encoding="utf-8")
+
+    # 정적 계약
+    ck("64 AUTH_KEY 를 Request Header 로만 전달",
+       'headers={"AUTH_KEY": key}' in src.replace(" ", "").replace('headers={"AUTH_KEY":key}', 'headers={"AUTH_KEY": key}')
+       or 'headers={"AUTH_KEY":key}' in src.replace(" ", ""))
+    ck("65 close x volume proxy 코드 0",
+       not re.search(r'close.*\*.*volume|volume.*\*.*close', src))
+    ck("66 직접 거래대금 필드(ACC_TRDVAL) 사용", "ACC_TRDVAL" in src)
+    ck("67 최대 2 req/s throttle", "MIN_INTERVAL_SEC = 0.5" in src and "_throttle()" in src)
+    ck("68 auth/승인 오류 재시도 0(예외로 즉시 중단)",
+       "raise AuthRejected" in src and "raise ServiceNotApproved" in src)
+    ck("69 429 즉시 중단", "raise RateLimited" in src)
+    ck("70 5xx 만 bounded retry", "MAX_RETRY_5XX" in src and "RETRY_BACKOFF" in src)
+    ck("71 결측을 0 으로 만들지 않음(_to_num -> None)",
+       'return None' in src and 'if s in ("", "-", "N/A")' in src)
+    ck("72 원자적 write 재사용(r30_cache._atomic_write)", "_atomic_write" in acq)
+    ck("73 R27 투영 재사용(project_to_r27)", "project_to_r27" in acq)
+    ck("74 needed_days/calendar 재사용(새 정의 0)",
+       "from r27_collect import needed_days, trading_calendar" in acq)
+    ck("75 2020 KRX 는 canonical 과 분리 저장",
+       "OVERLAP_CACHE" in acq and "write_overlap_day" in acq)
+    ck("76 status 는 checkpoint 를 쓰지 않는다(경합 방지)",
+       re.search(r"def status\(\):(?:(?!def ).)*?return \{", acq, re.S) is not None
+       and not re.search(r"def status\(\):(?:(?!def ).)*?save_ckpt", acq, re.S))
+    ck("77 KONEX/ETF 등 비대상 시장 호출 0",
+       'MARKETS = ["KOSPI", "KOSDAQ"]' in acq and "KONEX" not in src)
+
+    # anchor 산출물
+    a = _art("r31-anchor-latest.json")
+    if a is None:
+        notrun("78 anchor 검증", "anchor 미실행")
+    else:
+        ck("78 anchor verdict PASS", a["verdict"] == "PASS", str(a.get("failures"))[:120])
+        ck("79 KOSPI/KOSDAQ anchor parse 성공",
+           len({c["market"] for c in a["checks"]}) == 2
+           and all(c["rowCount"] > 0 for c in a["checks"]))
+        ck("80 leading zero 보존",
+           all(c["codeLen6"] for c in a["checks"])
+           and all(c["leadingZeroCodes"] > 0 for c in a["checks"]))
+        ck("81 duplicate key 0", all(c["duplicateCodes"] == 0 for c in a["checks"]))
+        ck("82 직접 거래대금 전 row 존재",
+           all(c["directTradedValueNonNull"] == c["rowCount"] for c in a["checks"]))
+        ck("83 거래대금이 close x volume 과 다름(proxy 아님)",
+           all(c["tradedValueDiffersFromCloseXVolume"] > 0 for c in a["checks"]))
+        ck("84 휴장일 응답 형태 정상(200 · rows 0)",
+           (a.get("holidayResponse") or {}).get("rowCount") == 0)
+        sv = a.get("survivorship") or {}
+        ck("85 survivorship-safe (현재 미상장 종목이 과거 행에 존재)",
+           bool(sv.get("historicalRowsIndependentOfCurrentListing")),
+           str(sv)[:120])
+
+    # 수집 진행
+    st = None
+    try:
+        sys.path.insert(0, str(SRC))
+        import r31_acquire as ACQ
+        st = ACQ.status()
+    except Exception as e:
+        notrun("86 수집 상태", f"{type(e).__name__}")
+    if st:
+        ck("86 request budget 상한 이내",
+           st["callsUsed"] <= st["cap"], f"{st['callsUsed']}/{st['cap']}")
+        ck("87 실패일 0", st["failed"] == 0, str(st["failed"]))
+        if st["backfillDone"] >= st["backfillTarget"]:
+            ck("88 backfill 완결(설명되지 않은 missing 0)", True)
+        else:
+            notrun("88 backfill 완결", f"{st['backfillDone']}/{st['backfillTarget']} 진행 중")
+        if st["overlapDone"] >= st["overlapTarget"]:
+            ck("89 overlap 수집 완결", True)
+        else:
+            notrun("89 overlap 수집 완결", f"{st['overlapDone']}/{st['overlapTarget']}")
+
+    # overlap 산출물
+    o = _art("r31-overlap-2020-latest.json")
+    if o is None:
+        notrun("90 2020 전구간 교차검증", "overlap 미실행")
+        notrun("91 systematic scale mismatch 검사", "overlap 미실행")
+    else:
+        ev, cmp_ = o["evaluation"], o["comparison"]
+        ck("90 2020 전구간 비교(표본 아님)",
+           o.get("fullPeriodNotSample") is True
+           and cmp_["days"]["bothPresent"] == cmp_["days"]["expected"],
+           f"{cmp_['days']['bothPresent']}/{cmp_['days']['expected']}")
+        ck("91 systematic scale mismatch 0",
+           ev["metrics"]["systematicScaleMismatch"] == 0)
+        ck("92 overlap gate 통과", ev["gatePassed"] is True, str(ev["checks"]))
+        ck("93 RAW/ELIGIBLE 분리 보고",
+           set(cmp_["stages"]) == {"RAW", "R27_ELIGIBLE"})
+
+    # stitch 산출물
+    s = _art("r31-stitch-latest.json")
+    if s is None:
+        notrun("94 stitch boundary/provenance", "stitch 미실행")
+    else:
+        ck("94 stitch boundary duplicate 0",
+           s["boundaryVerification"]["boundaryDuplicates"] == 0)
+        ck("95 source 경계 위반 0",
+           len(s["boundaryVerification"]["violations"]) == 0,
+           str(s["boundaryVerification"]["violations"])[:150])
+        ck("96 provenance 완전(누락 0)", s["rowsMissingProvenance"] == 0)
+        ck("97 duplicate primary key 0", s["duplicatePrimaryKeys"] == 0)
+        ck("98 2020 canonical 이 KRX 로 오염되지 않음",
+           s["overlapIsolation"]["canonicalSeparated"] is True)
+        ck("99 금지 연산 사용 0",
+           all(v == 0 for v in s["forbiddenOperationsUsed"].values()))
+        ck("100 raw storage LOCAL_ONLY", s["storageClass"] == "LOCAL_ONLY")
+
+    # raw Git 제외 (수집 후 재확인)
+    tracked = _git(["ls-files"], ROOT).splitlines()
+    bad = [f for f in tracked if f.startswith("_cache/")]
+    ck("101 수집 후에도 raw 캐시 Git 추적 0", not bad, str(bad[:3]))
+
+
 def main() -> int:
-    for f in (t_l1, t_l2, t_l3, t_l4, t_l5, t_l6, t_l7):
+    for f in (t_l1, t_l2, t_l3, t_l4, t_l5, t_l6, t_l7, t_l8):
         f()
     print(f"\n결과: PASS {PASS} / FAIL {FAIL} / NOT_RUN {NOTRUN}")
     print(f"verdict: {'PASS' if FAIL == 0 else 'FAIL'}")

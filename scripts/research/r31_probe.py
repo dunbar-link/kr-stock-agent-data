@@ -27,6 +27,7 @@ WABABA-KRX-OFFICIAL-BACKFILL-STITCH-AND-R27-CLOSE-R31
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -49,6 +50,8 @@ KOSDAQ_CANDIDATES = [
 DATE_PARAM_CANDIDATES = ["basDd"]
 
 PROBE_DATES = ["2020-01-02", "2010-01-04"]
+# §4-B 승인 전파 재확인 간격. 테스트는 R31_RECHECK_DELAY_SEC=0 으로 낮춘다.
+RECHECK_DELAY_SEC = int(os.environ.get("R31_RECHECK_DELAY_SEC", "60"))
 TIMEOUT = 30
 MAX_RETRY = 3
 RETRY_BACKOFF = (1.0, 3.0, 8.0)
@@ -93,11 +96,16 @@ def _classify(status, body, parsed):
     b = (body or "").lower()
     if status in (401, 403):
         # ★ 2026-09-06 교정: 초판은 본문에 'authoriz' 가 있으면 SERVICE_NOT_APPROVED
-        #   로 단정했다. 그런데 KRX 는 키 거부에도 "Unauthorized API Call" 을 준다 —
-        #   즉 이 본문만으로 **키 거부와 활용 미승인을 구분할 수 없다.**
-        #   한쪽으로 단정하면 R30 의 오진(User-Agent 사고)을 반복한다.
-        #   구분은 discriminate() 의 대조 호출이 한다.
-        return "AUTH_OR_APPROVAL_401"
+        #   로 단정했다. 근거 없이 단정하면 R30 의 오진(User-Agent 사고)을 반복한다.
+        # ★ 2026-09-06 실측(discriminate 대조): 이 게이트웨이는 두 경우를 **다른 문구**로
+        #   구분한다 — 무효키/빈키는 "Unauthorized Key", 등록키+미승인은
+        #   "Unauthorized API Call". 추정이 아니라 대조로 확인된 동작이라 이제
+        #   본문으로 나눈다. 그래도 discriminate() 대조는 유지해 회귀를 잡는다.
+        if "unauthorized key" in b:
+            return "UNAUTHORIZED_KEY"          # 키 자체 거부
+        if "unauthorized api call" in b:
+            return "UNAUTHORIZED_API_CALL"     # 키는 인식, 이 API 활용승인 없음
+        return "AUTH_OR_APPROVAL_401"          # 문구가 바뀐 경우 — 단정하지 않는다
     if status == 429:
         return "RATE_LIMITED"
     if status == 404:
@@ -211,7 +219,8 @@ def probe_market(name, endpoints, key, budget, log):
             res = call(ep, dp, PROBE_DATES[0], key, budget)
             log.append({"market": name, "endpoint": ep, "dateParam": dp,
                         "date": PROBE_DATES[0], **res})
-            if res["kind"] in ("AUTH_OR_APPROVAL_401", "RATE_LIMITED"):
+            if res["kind"] in ("AUTH_OR_APPROVAL_401", "UNAUTHORIZED_KEY",
+                               "UNAUTHORIZED_API_CALL", "RATE_LIMITED"):
                 return {"market": name, "endpoint": ep, "dateParam": dp,
                         "status": res["kind"], "endpointVerified": False,
                         "detail": res}
@@ -242,13 +251,40 @@ def main() -> int:
     budget = Budget()
     log = []
 
+    # ── §4 두 서비스 독립 판별 ────────────────────────────────────────────
+    #   승인 메일 건수로 "둘 다 됐다" 고 가정하지 않는다 — 각각 실호출로 본다.
+    #   단 키 자체가 거부되면(UNAUTHORIZED_KEY) 더 두드릴 이유가 없으므로 즉시 차단한다.
     kospi = probe_market("KOSPI", [KOSPI_ENDPOINT], key, budget, log)
-    kosdaq = ({"market": "KOSDAQ", "status": "NOT_PROBED_CIRCUIT_OPEN",
-               "endpointVerified": False}
-              if kospi["status"] in ("AUTH_OR_APPROVAL_401", "RATE_LIMITED")
-              else probe_market("KOSDAQ", KOSDAQ_CANDIDATES, key, budget, log))
+    if kospi["status"] in ("UNAUTHORIZED_KEY", "RATE_LIMITED"):
+        kosdaq = {"market": "KOSDAQ",
+                  "status": "NOT_PROBED_CIRCUIT_OPEN",
+                  "endpointVerified": False,
+                  "why": f"KOSPI {kospi['status']} — 전체 회로 차단"}
+    else:
+        kosdaq = probe_market("KOSDAQ", KOSDAQ_CANDIDATES, key, budget, log)
 
-    # 401 이면 키 거부 / 활용 미승인 중 어느 쪽인지 대조로 가른다.
+    # ── §4-B 활용승인 전파 지연 재확인 (미승인 서비스만, 60초 간격 최대 2회) ──
+    rechecks = {}
+    for m in (kospi, kosdaq):
+        if m["status"] != "UNAUTHORIZED_API_CALL":
+            continue
+        hist = [m["status"]]
+        for i in range(2):
+            time.sleep(RECHECK_DELAY_SEC)
+            r = call(m["endpoint"], m["dateParam"], PROBE_DATES[0], key, budget)
+            log.append({"market": m["market"] + "_RECHECK", "endpoint": m["endpoint"],
+                        "dateParam": m["dateParam"], "date": PROBE_DATES[0],
+                        "attempt": i + 2, **r})
+            hist.append(r["kind"])
+            if r["kind"] == "OK" and r["rowCount"]:
+                m["status"] = "OK"
+                m["endpointVerified"] = True
+                m["recent"] = r
+                break
+        rechecks[m["market"]] = {"attempts": len(hist), "kinds": hist,
+                                 "intervalSec": RECHECK_DELAY_SEC}
+
+    # 401 문구가 바뀌었으면 어느 쪽인지 대조로 가른다(문구 회귀 방지).
     disc = None
     if "AUTH_OR_APPROVAL_401" in (kospi["status"], kosdaq["status"]):
         disc = discriminate(KOSPI_ENDPOINT, kospi.get("dateParam") or
@@ -270,10 +306,14 @@ def main() -> int:
     statuses = {kospi["status"], kosdaq["status"]}
     if statuses == {"OK"}:
         verdict, reason = "PASS", "KRX_BOTH_SERVICES_ACCESSIBLE"
+    elif "UNAUTHORIZED_KEY" in statuses:
+        verdict, reason = "BLOCKED", "KRX_AUTH_KEY_REJECTED_AFTER_SERVICE_APPROVAL"
     elif "RATE_LIMITED" in statuses:
-        verdict, reason = "WAIT", "KRX_DAILY_REQUEST_BUDGET_OR_RATE_LIMIT_REACHED"
+        verdict, reason = "WAIT", "KRX_RATE_LIMIT_DURING_APPROVAL_PROBE"
+    elif "UNAUTHORIZED_API_CALL" in statuses:
+        # 60초 간격 3회 모두 동일 → 승인 전파 대기. 재신청·재등록하지 않는다.
+        verdict, reason = "WAIT", "KRX_API_APPROVAL_PROPAGATION_PENDING"
     elif "AUTH_OR_APPROVAL_401" in statuses:
-        # 구분 가능하면 활용승인 문제, 구분 불가면 그 사실 자체를 reason 으로 낸다.
         if disc and disc.get("distinguishable"):
             verdict, reason = "BLOCKED", "KRX_API_SERVICE_APPLICATION_REQUIRED"
         else:
@@ -288,6 +328,7 @@ def main() -> int:
         "credential": {"present": True, "sourceClass": "WINDOWS_USER_ENV",
                        "valuePrinted": 0},
         "kospi": kospi, "kosdaq": kosdaq, "discrimination": disc,
+        "approvalRechecks": rechecks,
         "budget": {"calls": budget.calls, "retries": budget.retries,
                    "rateLimitEvents": budget.rate_limit_events,
                    "cap": budget.cap},

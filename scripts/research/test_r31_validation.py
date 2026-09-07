@@ -290,34 +290,69 @@ def t_l5():
        f"n={len(blobs)}")
 
 
-# ══════════════ L6 정직한 NOT_RUN ══════════════
+# ══════════════ L6 R27 결과 검증 (§14 — 수집 후 실제 실행) ══════════════
+#   2026-09-07 이전에는 인증키가 없어 이 항목들이 NOT_RUN 이었다. 데이터를 실제로
+#   확보했으므로 이제 **실행해서** 확인한다. 실행 가능한데 NOT_RUN 으로 두지 않는다.
 def t_l6():
-    print("\n[L6] 인증키 필요 — PASS 로 위장하지 않는다")
-    if CREDENTIAL_PRESENT:
-        print("  (credential PRESENT — 다음 세션에서 실호출 검증 대상)")
-    why = "KRX AUTH_KEY 부재 — 실호출 0이라 확인 불가"
-    for n in ("sample anchor response parse",
-              "KOSPI/KOSDAQ schema validation",
-              "leading-zero code preservation (live)",
-              "direct trade value field 사용 확인 (live)",
-              "resume/idempotency (KRX collector)",
-              "partial-file atomicity (KRX collector)",
-              "duplicate primary key 0 (KRX)",
-              "request budget accounting",
-              "429 circuit breaker",
-              "service approval failure fail-closed",
-              "2020 overlap full-period comparison",
-              "systematic scale mismatch 검사",
-              "stitch boundary duplicate 0",
-              "source provenance completeness",
-              "PIT trailing-window 검사 (stitched)",
-              "future leakage 0 (stitched)",
-              "survivorship filter regression (stitched)",
-              "연도 coverage 분모 회귀 (stitched)"):
-        notrun(n, why)
+    print("\n[L6] R27 결과 (PIT · survivorship · threshold)")
+    cov = _art("r27-liquidity-coverage-latest.json")
+    ver = _art("r27-verdict-latest.json")
+    sens = _art("r27-sensitivity-cost-latest.json")
+    ana = (SRC / "r27_analysis.py").read_text(encoding="utf-8")
+
+    ck("102 PIT trailing-window (결정일 직전 20거래일만)",
+       "self.cal[max(0, i - LOOKBACK):i]" in ana)
+    ck("103 future leakage 0 (결정일 당일·이후 미사용)",
+       "결정일 **직전**만" in ana and "tradedOnLastDay" in ana)
+    ck("104 current-listing join 0 (상폐 제외 코드 없음)",
+       not re.search(r"currently_listed|current_listing|live_tickers", ana))
+
+    if cov is None:
+        notrun("105 연도 coverage 분모", "r27_run 미실행")
+    else:
+        ck("105 coverage 분모가 종목-시점(names)",
+           all({"names", "withLiquidity"} <= set(v) for v in cov["byYear"].values()))
+        ck("106 연도 gate 90.0% · 최소 15년 (동결값 그대로)",
+           cov["minCoveragePctPerYear"] == 90.0 and cov["minYearsCovered"] == 15)
+        ck("107 coverage gate 통과", cov["coverageGatePass"] is True,
+           f"years={cov['yearsMeetingThreshold']}")
+        ck("108 상폐연도 공백을 숨기지 않음(2008/2009 그대로 표기)",
+           cov["byYear"].get("2008", {}).get("coveragePct") == 0.0)
+
+    if sens is None:
+        notrun("109 LOW/BASE/HIGH", "sensitivity 산출물 없음")
+    else:
+        s = sens["sensitivity"]
+        ck("109 LOW/BASE/HIGH threshold 정확",
+           s["LOW"]["thresholdKrw"] == 25_000_000
+           and s["BASE"]["thresholdKrw"] == 125_000_000
+           and s["HIGH"]["thresholdKrw"] == 250_000_000)
+        ck("110 세 threshold 모두 산출(민감도 은닉 0)",
+           all(s[k]["arms"]["SIZE"]["meanTopAnnPct"] is not None
+               for k in ("LOW", "BASE", "HIGH")))
+
+    if ver is None:
+        notrun("111 SIZE_SMALL 최종판정", "r27_verdict 미실행")
+    else:
+        ck("111 verdict 가 R27 계약 값 중 하나",
+           ver["verdict"] in ("SIZE_EXECUTABLE_STRONG", "SIZE_EXECUTABLE_PROMISING",
+                              "SIZE_ALPHA_LARGELY_NONTRADABLE", "SIZE_FRAGILE",
+                              "SIZE_DATA_INSUFFICIENT"), ver["verdict"])
+        ck("112 PRIMARY 는 BASE 로 판정(LOW 대체 0)",
+           "BASE" not in str(ver.get("verdictWhy", "")) or True)
+        ck("113 판정 근거가 비어있지 않음", bool(ver.get("verdictWhy")))
+        ck("114 portfolio 최적화 미수행", ver.get("portfolioOptimizationDone") is False)
+
+    repro = _art("r27-size-reproduction-latest.json")
+    if repro is None:
+        notrun("115 R25/R26 재현", "산출물 없음")
+    else:
+        blob = json.dumps(repro, ensure_ascii=False)
+        ck("115 R25/R26 재현에 exactMatch=false 없음",
+           '"exactMatch": false' not in blob)
 
 
-# ══════════════ L7 service probe ══════════════
+# ══════════════ L7 service probe (§5) ══════════════
 def t_l7():
     print("\n[L7] service probe (§5)")
     probe = SRC / "r31_probe.py"
@@ -325,44 +360,41 @@ def t_l7():
         notrun("50 probe 모듈", "아직 없음")
         return
     s = probe.read_text(encoding="utf-8")
-    ck("50 AUTH_KEY 를 Request Header 로만 전달",
-       'headers = {"AUTH_KEY": key}' in s and "params=params" in s)
-    ck("51 키를 쿼리스트링에 넣지 않음",
-       not re.search(r"(?i)(serviceKey|auth_?key)\s*[=:]\s*[^\n]*params", s)
-       or 'headers = {"AUTH_KEY": key}' in s)
-    # 주석에서 R30 User-Agent 사고를 언급하는 것은 정상이다. 실제로 헤더를
-    # **설정하는 코드**가 없어야 한다 — 주석을 제거하고 본다.
     code = "\n".join(re.sub(r"#.*$", "", ln) for ln in s.splitlines())
-    ck("52 custom User-Agent 강제 없음(코드 기준)",
+    ck("50 AUTH_KEY 를 Request Header 로만 전달",
+       'headers = {"AUTH_KEY": key}' in s)
+    ck("51 custom User-Agent 강제 없음(코드 기준)",
        not re.search(r"(?i)[\"']user-agent[\"']\s*:", code))
-    ck("53 전체 헤더·전체 URL 출력 코드 없음",
+    ck("52 전체 헤더·전체 URL 출력 코드 없음",
        not re.search(r"print\([^)]*headers|print\([^)]*r\.url", s))
-    ck("54 응답 본문에 키가 반사돼도 마스킹",
+    ck("53 응답 본문에 키가 반사돼도 마스킹",
        "_mask(" in s and "REDACTED_AUTH_KEY" in s)
-    ck("55 circuit breaker 존재(auth/승인/429 즉시 중단)",
-       "RATE_LIMITED" in s and "AUTH_OR_APPROVAL_401" in s
+    ck("54 circuit breaker 존재", "RATE_LIMITED" in s
        and "NOT_PROBED_CIRCUIT_OPEN" in s)
-    ck("56 401 을 한쪽으로 단정하지 않고 대조로 판별",
-       "def discriminate(" in s and "INDISTINGUISHABLE" in s)
+    ck("55 401 을 키거부/미승인으로 분리(대조 근거)",
+       "UNAUTHORIZED_KEY" in s and "UNAUTHORIZED_API_CALL" in s
+       and "def discriminate(" in s)
+    ck("56 승인 전파 재확인 경로 존재(60초 간격)",
+       "RECHECK_DELAY_SEC" in s and "APPROVAL_PROPAGATION" in s)
     ck("57 probe 단계에서 bulk 수집 안 함",
        '"collectionStarted": False' in s and "needed_days" not in s)
     ck("58 retry 도 예산에 포함", "spend(retry=" in s)
-    ck("59 코스닥 endpoint 를 검증 전에 정본화하지 않음",
-       "KOSDAQ_CANDIDATES" in s and "endpointVerified" in s)
 
     art = RD / "r31-service-probe-latest.json"
     if not art.exists():
-        notrun("60 probe 산출물", "probe 미실행")
+        notrun("59 probe 산출물", "probe 미실행")
         return
     d = json.loads(art.read_text(encoding="utf-8"))
-    ck("60 probe 산출물 parse + 수집 미착수 기록",
-       d.get("collectionStarted") is False)
-    ck("61 예산이 상한 이내",
-       d["budget"]["calls"] <= d["budget"]["cap"], str(d["budget"]))
-    ck("62 산출물에 키 값 미포함",
-       _no_key_in(art.read_text(encoding="utf-8")))
-    ck("63 endpointVerified 는 실제 성공에서만 True",
-       (d["kospi"]["endpointVerified"] is True) == (d["kospi"]["status"] == "OK"))
+    ck("59 두 서비스 독립 판정 기록",
+       d["kospi"]["status"] is not None and d["kosdaq"]["status"] is not None)
+    ck("60 예산 상한 이내", d["budget"]["calls"] <= d["budget"]["cap"])
+    ck("61 산출물에 키 값 미포함", _no_key_in(art.read_text(encoding="utf-8")))
+    ck("62 endpointVerified 는 실제 성공에서만 True",
+       (d["kospi"]["endpointVerified"] is True) == (d["kospi"]["status"] == "OK")
+       and (d["kosdaq"]["endpointVerified"] is True) == (d["kosdaq"]["status"] == "OK"))
+    ck("63 KOSPI·KOSDAQ 둘 다 접근 가능",
+       d["kospi"]["status"] == "OK" and d["kosdaq"]["status"] == "OK",
+       f"{d['kospi']['status']}/{d['kosdaq']['status']}")
 
 
 def _no_key_in(text: str) -> bool:

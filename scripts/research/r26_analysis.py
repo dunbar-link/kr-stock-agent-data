@@ -273,12 +273,27 @@ def boot_summary(means, obs):
             "pExcessAbove2pp": round(sum(1 for x in m if x > 0.02) / len(m), 4)}
 
 
-def non_overlapping(rows, h):
+def non_overlapping(rows, h, arms=None):
+    """겹치지 않는 코호트만 남긴다.
+
+    ★ 2026-09-07 최소 수정: arm 이름을 R26 것으로 **하드코딩**하고 있었다
+      (`r[ARMS[0]]`). R27 은 arm 이름이 다르므로(SIZE/BM/CONTROL) 이 함수를
+      재사용하면 KeyError 가 난다. R27 은 coverage gate 에서 늘 멈춰서 이 경로가
+      한 번도 실행된 적이 없었고, R31 이 데이터를 채워 gate 를 통과하자 드러났다.
+
+      arms 를 인자로 받되 **기본값은 기존 R26 ARMS 그대로**다 — 인자를 주지 않는
+      기존 호출부(R26)의 동작은 한 글자도 바뀌지 않는다. 코호트의 arm 들은 같은
+      기간을 공유하므로 어느 arm 의 endDate 를 읽든 결과는 동일하다.
+    """
+    use = arms or ARMS
     out, last = [], None
     for r in rows:
         if last is None or r["startDate"] >= last:
             out.append(r)
-            last = r[ARMS[0]]["endDate"]
+            key = next((a for a in use if a in r), None)
+            if key is None:
+                continue
+            last = r[key]["endDate"]
     return out
 
 

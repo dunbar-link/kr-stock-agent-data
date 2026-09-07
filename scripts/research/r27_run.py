@@ -338,7 +338,7 @@ def main() -> int:
         roll[a] = {}
         for h in ALL_H:
             ov = diff_series(after[h], a, "CONTROL")
-            no = diff_series(non_overlapping(after[h], h), a, "CONTROL")
+            no = diff_series(non_overlapping(after[h], h, ARMS), a, "CONTROL")
             roll[a][f"{h}M"] = {"overlapping": summarize_diff(ov),
                                 "nonOverlapping": summarize_diff(no)}
     A.save("subperiod-rolling", {

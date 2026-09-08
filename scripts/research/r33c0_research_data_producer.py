@@ -425,10 +425,35 @@ def _today_kst():
     return _dt.datetime.now(_zi.ZoneInfo("Asia/Seoul")).date().isoformat()
 
 
+# ── R33 prospective track 종결 상태 (R33C0C, 2026-09-08) ──────────────
+#   R33C0B: BM_PROSPECTIVE_RETIRED
+#   R33C0C: PROSPECTIVE_OOS_NO_GO → track CLOSED · R33C CLOSED_NOT_ACTIVATED
+#   따라서 PIT(PBR/BPS)는 더 이상 '진행중 blocker' 가 아니다. 근거는 지우지 않고
+#   보존하되, 매일 Founder action 으로 반복 표면화하지 않는다.
+R33_TRACK_TERMINAL = {
+    "prospectiveTrackStatus": "CLOSED",
+    "r33cStatus": "CLOSED_NOT_ACTIVATED",
+    "bmProspectiveStatus": "RETIRED",
+    "sizeProspectiveStatus": "HISTORICAL_RESEARCH_ASSET_ONLY",
+    "historicalResultsStatus": "VALID_PRESERVED",
+    "pitPbrBpsRequirement": "NOT_REQUIRED_FOR_CLOSED_PROSPECTIVE_TRACK",
+    "dataReadyForNextSignal": "NOT_APPLICABLE_TRACK_CLOSED",
+    "disposition": "R33_TRACK_CLOSED_NO_ACTION",
+    "nextSingleTask": "NONE",
+    "founderAction": "NONE",
+    "realMoneyApproved": False,
+    "paperOnly": True,
+    "decidedBy": "WABABA-SIZE-ONLY-PROSPECTIVE-OOS-GO-NOGO-R33C0C",
+}
+
+
 def pit_status():
-    """PIT 월별 스냅샷은 이 모듈이 만들지 않는다 — 원인을 사실대로 보고한다."""
+    """PIT 월별 스냅샷은 이 모듈이 만들지 않는다 — 원인을 사실대로 보존한다.
+
+    R33 track 종결 후에도 **차단 근거는 지우지 않는다**(§8). 다만 종결된 track 의
+    요구사항이므로 활성 blocker·Founder action 으로 매일 올리지 않는다.
+    """
     pit = sorted(p.name[:-7] for p in FROZEN_PIT.glob("*.csv.gz"))
-    sig = planned_monthly_signals(pit[-1] if pit else "2026-01-01", 2)
     return {
         "producer": "build_pit_snapshots.py (pykrx / KRX)",
         "status": "BLOCKED_UPSTREAM_CREDENTIAL",
@@ -436,10 +461,14 @@ def pit_status():
                    "자격증명 복구는 이번 승인 범위 밖(env/token/security 변경 불가)."),
         "latestSnapshot": pit[-1] if pit else None,
         "snapshotCount": len(pit),
-        "dueSignalsNotProduced": [s["signalDate"] for s in sig],
         "sizeComputableFromOfficialSource": True,
         "bmComputableFromOfficialSource": False,
-        "consequence": "BM/SIZE 공통 snapshot 동결 불가 → R33C 계약 실행 불가",
+        # track 이 닫혔으므로 due signal 을 누적하지 않는다(반복 경고 원인이었다).
+        "requirement": R33_TRACK_TERMINAL["pitPbrBpsRequirement"],
+        "activeBlocker": False,
+        "founderActionRequired": False,
+        "consequence": ("R33 prospective track 이 R33C0C 에서 CLOSED 로 종결됐다. "
+                        "이 차단은 종결된 track 의 기록이며 신규 조치 대상이 아니다."),
     }
 
 
@@ -488,11 +517,17 @@ def build_status(run_mode, run_res=None, budget=None, started=None):
         st["failures"] = budget.failures
         st["rateLimited"] = budget.rate_limited
         st["stopped"] = budget.stopped
+    # producerVerdict 는 **살아 있는 두 producer 의 건강** 만으로 판정한다.
+    # 종결된 R33 track 의 PIT 차단을 매일 판정에 섞지 않는다(§8·§9). 다만
+    # 공식 일별·캘린더의 실제 장애는 그대로 STALE_OR_INCOMPLETE 로 올라간다.
     fresh = bool(uni and cal and cal["observedThrough"] == uni[-1])
-    st["producerVerdict"] = ("OFFICIAL_DAILY_AND_CALENDAR_CURRENT_PIT_BLOCKED"
+    st["producerVerdict"] = ("OFFICIAL_DAILY_AND_CALENDAR_CURRENT"
                              if fresh else "STALE_OR_INCOMPLETE")
-    st["dataReadyForNextSignal"] = False
-    st["dataReadyReason"] = "PIT 월별 스냅샷 미생산 (PBR/BPS 경로 차단)"
+    st["officialDailyHealth"] = "OK" if fresh else "STALE_OR_INCOMPLETE"
+    st["calendarHealth"] = "OK" if fresh else "STALE_OR_INCOMPLETE"
+    st.update(R33_TRACK_TERMINAL)
+    st["dataReadyReason"] = ("R33 prospective track CLOSED (R33C0C) — "
+                             "next signal 개념이 적용되지 않는다.")
     CONT_STATUS.mkdir(parents=True, exist_ok=True)
     tmp = CONT_STATUS / "status.json.tmp"
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")

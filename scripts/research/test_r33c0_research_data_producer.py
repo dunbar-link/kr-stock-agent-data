@@ -192,13 +192,37 @@ def t_l6():
     ck("차단 사유 명시", "KRX 로그인" in p["reason"])
     ck("BM 계산 불가 명시", p["bmComputableFromOfficialSource"] is False)
     ck("SIZE 는 계산 가능 명시", p["sizeComputableFromOfficialSource"] is True)
-    ck("미생산 signal 목록", len(p["dueSignalsNotProduced"]) > 0)
     ck("PIT 최신이 frozen 그대로", p["latestSnapshot"] == BASELINE["pitMax"])
+    # ── R33C0C(2026-09-08) 이후: prospective track 이 CLOSED 로 종결됐다.
+    #    차단 **근거는 보존**하되 활성 blocker·Founder action 으로 올리지 않고
+    #    due signal 을 누적하지 않는다. 이전의 PIT_BLOCKED 단언을 대체한다.
+    ck("활성 blocker 아님", p["activeBlocker"] is False)
+    ck("Founder action 불요", p["founderActionRequired"] is False)
+    ck("due signal 누적 안 함", "dueSignalsNotProduced" not in p)
+    ck("PIT 요구사항 = 종결 track",
+       p["requirement"] == "NOT_REQUIRED_FOR_CLOSED_PROSPECTIVE_TRACK")
     st = R.build_status("test")
-    ck("dataReadyForNextSignal False (거짓 green 금지)",
-       st["dataReadyForNextSignal"] is False)
-    ck("producerVerdict 가 PIT 차단 명시",
-       "PIT_BLOCKED" in st["producerVerdict"], st["producerVerdict"])
+    ck("dataReadyForNextSignal = 종결 track (거짓 green 아님)",
+       st["dataReadyForNextSignal"] == "NOT_APPLICABLE_TRACK_CLOSED")
+    ck("producerVerdict 에 PIT 차단 미포함",
+       "PIT_BLOCKED" not in st["producerVerdict"], st["producerVerdict"])
+    ck("producerVerdict 는 살아있는 producer 건강만 판정",
+       st["producerVerdict"] in ("OFFICIAL_DAILY_AND_CALENDAR_CURRENT",
+                                 "STALE_OR_INCOMPLETE"))
+    for k, v in (("prospectiveTrackStatus", "CLOSED"),
+                 ("r33cStatus", "CLOSED_NOT_ACTIVATED"),
+                 ("bmProspectiveStatus", "RETIRED"),
+                 ("sizeProspectiveStatus", "HISTORICAL_RESEARCH_ASSET_ONLY"),
+                 ("pitPbrBpsRequirement",
+                  "NOT_REQUIRED_FOR_CLOSED_PROSPECTIVE_TRACK"),
+                 ("disposition", "R33_TRACK_CLOSED_NO_ACTION"),
+                 ("founderAction", "NONE"), ("nextSingleTask", "NONE")):
+        ck(f"종결 status: {k}", st[k] == v, str(st.get(k)))
+    ck("실주문 미승인 유지",
+       st["realMoneyApproved"] is False and st["paperOnly"] is True)
+    ck("공식 일별·캘린더 건강 별도 표면화",
+       st["officialDailyHealth"] in ("OK", "STALE_OR_INCOMPLETE")
+       and st["calendarHealth"] in ("OK", "STALE_OR_INCOMPLETE"))
 
 
 def t_l7():

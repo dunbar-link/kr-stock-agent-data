@@ -266,16 +266,82 @@ def t_l7():
         notrun("timeline", "artifact 없음")
         return
     ck("성과 호출 0", t["performanceFunctionCalls"] == 0)
-    ck("first signal 2026-10-01", t["firstSignal"] == "2026-10-01")
-    ck("first maturity = +36M", t["firstMaturity"] == "2029-10-01")
-    ck("12th maturity", t["maturity12th"] == "2030-09-01")
-    ck("24th maturity", t["maturity24th"] == "2031-09-01")
-    ck("36th maturity", t["maturity36th"] == "2032-09-01")
-    ck("2nd non-overlapping anchor",
-       t["secondNonOverlappingAnchorMaturity"] == "2032-10-01")
-    ck("정식 review 는 36th·anchor 중 나중",
-       t["earliestFormalReview"] == max(t["maturity36th"],
-                                        t["secondNonOverlappingAnchorMaturity"]))
+    M = t["milestones"]
+    # ── entry anchor 정합성 (R33A: nominal maturity = entry + 36 calendar months)
+    ck("signal date anchor 미사용", t["signalDateAnchorUsed"] is False)
+    ck("anchor 규칙에 entry target date 명시",
+       "entry target date" in t["maturityAnchorRule"])
+    ck("canonical add_months 재사용",
+       "r33b_supplement.add_months" in t["addMonthsSource"])
+    ck("first signal 2026-10-01", M["first"]["signalDate"] == "2026-10-01")
+    ck("first entry 2026-10-02", M["first"]["entryTargetDate"] == "2026-10-02")
+    ck("first nominal maturity 2029-10-02",
+       M["first"]["nominalMaturityDate"] == "2029-10-02",
+       M["first"]["nominalMaturityDate"])
+    for k in ("first", "12th", "24th", "36th", "secondNonOverlappingAnchor"):
+        m = M[k]
+        ck(f"{k}: signal≠entry 분리", m["signalDate"] != m["entryTargetDate"])
+        ck(f"{k}: maturity anchor = entry", m["maturityAnchor"] == "entryTargetDate")
+        ck(f"{k}: nominal == entry+36M",
+           m["nominalMaturityDate"] == D._add_months(m["entryTargetDate"], 36))
+        ck(f"{k}: signal anchor 로 계산되지 않음",
+           m["nominalMaturityDate"] != D._add_months(m["signalDate"], 36))
+        # 실제 exit session 은 nominal 이전으로 당겨질 수 없다
+        ex = m["actualExitTargetSession"]
+        ck(f"{k}: exit session 이 nominal 이전 아님",
+           ex is None or ex >= m["nominalMaturityDate"])
+        ck(f"{k}: 캘린더 미확정이면 pending",
+           (ex is not None) or
+           m["actualExitSessionStatus"] == "PENDING_CANONICAL_CALENDAR_EXTENSION")
+    ck("각 milestone 이 자기 cohort ordinal 로 계산",
+       [M[k]["cohortOrdinal"] for k in ("first", "12th", "24th", "36th",
+                                        "secondNonOverlappingAnchor")]
+       == [1, 12, 24, 36, 37])
+    ck("2nd anchor 는 36개월 뒤 cohort",
+       M["secondNonOverlappingAnchor"]["cohortOrdinal"]
+       - M["firstNonOverlappingAnchor"]["cohortOrdinal"] == 36)
+    ck("정식 review = 36th·2nd anchor 중 나중",
+       t["earliestFormalReviewNominal"]
+       == max(M["36th"]["nominalMaturityDate"],
+              M["secondNonOverlappingAnchor"]["nominalMaturityDate"]))
+    # ── 미래 캘린더 표현
+    ck("공식 future calendar 경계 명시",
+       t["officialFutureCalendarThrough"] == "2026-12-31")
+    ck("경계 밖은 확정하지 않음",
+       all(M[k]["signalDateStatus"] == "PROJECTION_ONLY_NOT_CONTRACTUAL"
+           for k in ("12th", "24th", "36th", "secondNonOverlappingAnchor")))
+    ck("경계 안은 확정", M["first"]["signalDateStatus"] == "CANONICAL_CONFIRMED"
+       and M["first"]["entryDateStatus"] == "CANONICAL_CONFIRMED")
+    ck("nominal 은 formula 파생 표시",
+       M["first"]["nominalMaturityDateStatus"] == "FORMULA_DERIVED_NOMINAL")
+    ck("timeline 은 가정적", t["timelineNature"] == "HYPOTHETICAL_TIMELINE_ONLY")
+    ck("운영일정 아님", t["operationalSchedule"] == "NOT_APPLICABLE_TRACK_CLOSED")
+    # ── add_months 정합 (월말·윤년) — canonical 과 동등
+    import r33b_supplement as S
+    ck("월말 절단 2026-01-31+1M=2026-02-28",
+       D._add_months("2026-01-31", 1) == "2026-02-28")
+    ck("윤년 2028-02-29+12M=2029-02-28",
+       D._add_months("2028-02-29", 12) == "2029-02-28")
+    ck("canonical add_months 와 동등(3000일×4 horizon)",
+       all(S.add_months((__import__("datetime").date(2020, 1, 1)
+                         + __import__("datetime").timedelta(days=i)).isoformat(), m)
+           == D._add_months((__import__("datetime").date(2020, 1, 1)
+                             + __import__("datetime").timedelta(days=i)).isoformat(), m)
+           for i in range(0, 3000, 7) for m in (1, 12, 36, 72)))
+    # ── append-only 정정 기록
+    c = t["correction"]
+    ck("정정 사유 기록",
+       c["correctionReason"] == "SIGNAL_DATE_WAS_USED_INSTEAD_OF_ENTRY_TARGET_DATE")
+    ck("정정 범위 TIMELINE_ONLY", c["correctionScope"] == "TIMELINE_ONLY")
+    ck("decision impact NONE", c["decisionImpact"] == "NONE")
+    ck("gate impact NONE", c["gateImpact"] == "NONE")
+    ck("performance impact NONE", c["performanceImpact"] == "NONE")
+    pre = c["preCorrectionTimeline"]
+    ck("PRE_CORRECTION 보존: first", pre["firstMaturity"] == "2029-10-01")
+    ck("PRE_CORRECTION 보존: 36th", pre["maturity36th"] == "2032-09-01")
+    ck("PRE_CORRECTION 보존: review", pre["earliestFormalReview"] == "2032-10-01")
+    ck("정정 전후가 실제로 다르다",
+       pre["firstMaturity"] != M["first"]["nominalMaturityDate"])
     g = t["reviewTimeGate"]
     ck("maturity 전 정식 판정 금지", g["noFormalDecisionBeforeMaturity"] is True)
     ck("12·24 는 descriptive 만", g["descriptiveCheckpointsOnly"] == [12, 24])
@@ -475,8 +541,85 @@ def t_l10():
        "trailing whitespace" not in git(["diff", "--check"]).lower())
 
 
+def t_l11():
+    """R33C0C closeout correction — 종결 status surface · 반복 blocker 제거."""
+    print("\n[L11] terminal status surface")
+    sys.path.insert(0, str(SRC))
+    import r33c0_research_data_producer as P
+    ck("R33C0 계약 hash 불변", P.contract_hash().startswith("a9f47e1a"))
+    T = P.R33_TRACK_TERMINAL
+    for k, v in (("prospectiveTrackStatus", "CLOSED"),
+                 ("r33cStatus", "CLOSED_NOT_ACTIVATED"),
+                 ("bmProspectiveStatus", "RETIRED"),
+                 ("sizeProspectiveStatus", "HISTORICAL_RESEARCH_ASSET_ONLY"),
+                 ("pitPbrBpsRequirement",
+                  "NOT_REQUIRED_FOR_CLOSED_PROSPECTIVE_TRACK"),
+                 ("dataReadyForNextSignal", "NOT_APPLICABLE_TRACK_CLOSED"),
+                 ("disposition", "R33_TRACK_CLOSED_NO_ACTION"),
+                 ("nextSingleTask", "NONE"), ("founderAction", "NONE")):
+        ck(f"terminal: {k}", T[k] == v, str(T.get(k)))
+    ck("실주문 미승인", T["realMoneyApproved"] is False and T["paperOnly"] is True)
+    ck("historical 결과 보존 선언", T["historicalResultsStatus"] == "VALID_PRESERVED")
+
+    pit = P.pit_status()
+    ck("PIT 차단 근거 삭제 안 함",
+       pit["status"] == "BLOCKED_UPSTREAM_CREDENTIAL" and "KRX 로그인" in pit["reason"])
+    ck("활성 blocker 아님", pit["activeBlocker"] is False)
+    ck("Founder action 불요", pit["founderActionRequired"] is False)
+    ck("due signal 누적 제거", "dueSignalsNotProduced" not in pit)
+
+    st = P.build_status("test")
+    ck("dataReadyForNextSignal 거짓 green 아님",
+       st["dataReadyForNextSignal"] == "NOT_APPLICABLE_TRACK_CLOSED"
+       and st["dataReadyForNextSignal"] is not True)
+    ck("producerVerdict 에 PIT_BLOCKED 없음", "PIT_BLOCKED" not in st["producerVerdict"])
+    ck("공식 일별 건강 별도 표면화", st["officialDailyHealth"] in ("OK", "STALE_OR_INCOMPLETE"))
+    ck("캘린더 건강 별도 표면화", st["calendarHealth"] in ("OK", "STALE_OR_INCOMPLETE"))
+
+    # 실제 장애는 여전히 올라와야 한다 — fixture 로 확인
+    import unittest.mock as mock
+    with mock.patch.object(P, "union_official_days", lambda: []):
+        bad = P.build_status("test-degraded")
+    ck("실제 장애 시 STALE_OR_INCOMPLETE",
+       bad["producerVerdict"] == "STALE_OR_INCOMPLETE", bad["producerVerdict"])
+    ck("실제 장애 시에도 종결 status 유지",
+       bad["prospectiveTrackStatus"] == "CLOSED")
+    ck("장애를 종결로 덮지 않음", bad["officialDailyHealth"] == "STALE_OR_INCOMPLETE")
+
+    host = (ROOT / "scripts" / "magic_morning_combined_report.py").read_text(
+        encoding="utf-8")
+    ck("hook 이 종결 disposition 출력", "r33={st.get('disposition')}" in host)
+    ck("hook 이 daily/calendar health 출력",
+       "dailyHealth" in host and "calendarHealth" in host)
+    ck("hook 이 PIT 상태를 매일 줄에 올리지 않음",
+       "pit={(st.get('pit') or {}).get('status')}" not in host)
+    ck("hook 실패 격리 유지", "HOOK_FAILED" in host and "except Exception" in host)
+    ck("신규 scheduler/trigger 0", "schtasks" not in host
+       and "Register-ScheduledTask" not in host)
+
+    # 결정·게이트 불변
+    d = jload(DEC)
+    if d:
+        ck("결정 불변: NO_GO",
+           d["decision"]["decision"] == "PROSPECTIVE_OOS_NO_GO")
+        ck("gate 재계산 0 (23/3 유지)",
+           len(d["decision"]["passedMandatoryGates"]) == 23
+           and len(d["decision"]["failedMandatoryGates"]) == 3)
+    md = WD / "wababa-size-only-prospective-oos-go-nogo-r33c0c-latest.md"
+    if md.exists():
+        b = md.read_text(encoding="utf-8")
+        for need in ("PRE_CORRECTION_TIMELINE", "POST_CORRECTION_TIMELINE",
+                     "SIGNAL_DATE_WAS_USED_INSTEAD_OF_ENTRY_TARGET_DATE",
+                     "2029-10-02", "HYPOTHETICAL_TIMELINE_ONLY",
+                     "NOT_REQUIRED_FOR_CLOSED_PROSPECTIVE_TRACK",
+                     "R33_TRACK_CLOSED_NO_ACTION"):
+            ck(f"보고 항목: {need}", need in b)
+        ck("정정 전 값 보존", "2029-10-01" in b)
+
+
 def main() -> int:
-    for f in (t_l1, t_l2, t_l3, t_l4, t_l5, t_l6, t_l7, t_l8, t_l9, t_l10):
+    for f in (t_l1, t_l2, t_l3, t_l4, t_l5, t_l6, t_l7, t_l8, t_l9, t_l10,
+              t_l11):
         f()
     print(f"\n결과: PASS {PASS} / FAIL {FAIL} / NOT_RUN {NOTRUN} / "
           f"PROHIBITED_AND_NOT_CALLED {PROHIB}")

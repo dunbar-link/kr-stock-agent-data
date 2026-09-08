@@ -438,28 +438,133 @@ def scheduler_identity():
 # §15 OOS timeline — 날짜만 계산한다(성과 0)
 # ══════════════════════════════════════════════════════════════════════
 def _add_months(iso, months):
-    import calendar as _cal
-    y, m, d = (int(x) for x in iso.split("-"))
-    t = m - 1 + months
-    y2, m2 = y + t // 12, t % 12 + 1
-    return date(y2, m2, min(d, _cal.monthrange(y2, m2)[1])).isoformat()
+    """R33B 에서 말일절단 결함을 고친 canonical helper 를 재사용한다(§7-C).
+
+    새 date framework 를 만들지 않는다. import 불가일 때만 동일 동작으로 최소
+    포트한다 — 동등성은 test 가 3000일 × 4 horizon 으로 매번 재확인한다.
+    """
+    try:
+        from r33b_supplement import add_months as _canon
+        return _canon(iso, months)
+    except Exception:
+        import calendar as _cal
+        y, m, d = (int(x) for x in iso.split("-"))
+        t = m - 1 + months
+        y2, m2 = y + t // 12, t % 12 + 1
+        return date(y2, m2, min(d, _cal.monthrange(y2, m2)[1])).isoformat()
+
+
+# 공식 거래일을 단정할 수 있는 마지막 날.
+# 근거: 저장소 curated KRX_HOLIDAYS 표가 2026-01-01~2027-01-01 만 덮고,
+#       R33C0 이 그 표를 26 개 후보평일에 교차검증했다(불일치 0).
+#       그 밖은 휴장일을 알 수 없으므로 실제 거래일로 '확정' 하지 않는다(§3·§5).
+OFFICIAL_FUTURE_CALENDAR_THROUGH = "2026-12-31"
+
+STATUS_CONFIRMED = "CANONICAL_CONFIRMED"
+STATUS_NOMINAL = "FORMULA_DERIVED_NOMINAL"
+STATUS_PENDING = "PENDING_CANONICAL_CALENDAR_EXTENSION"
+STATUS_PROJECTION = "PROJECTION_ONLY_NOT_CONTRACTUAL"
+STATUS_NA_CLOSED = "NOT_APPLICABLE_TRACK_CLOSED"
+
+
+def _holidays():
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from build_magic_signal_package import KRX_HOLIDAYS
+        return set(KRX_HOLIDAYS)
+    except Exception:
+        return set()
+
+
+def _is_session(iso, hol):
+    return date.fromisoformat(iso).weekday() < 5 and iso not in hol
+
+
+def _next_session(iso, hol, inclusive=False):
+    d = date.fromisoformat(iso)
+    if not inclusive:
+        d += timedelta(days=1)
+    for _ in range(40):
+        if _is_session(d.isoformat(), hol):
+            return d.isoformat()
+        d += timedelta(days=1)
+    return None
+
+
+def _first_session_of_month(y, m, hol):
+    return _next_session(date(y, m, 1).isoformat(), hol, inclusive=True)
+
+
+def _status_for(iso):
+    """그 날짜를 공식 캘린더로 단정할 수 있는가."""
+    if iso is None:
+        return STATUS_PENDING
+    return (STATUS_CONFIRMED if iso <= OFFICIAL_FUTURE_CALENDAR_THROUGH
+            else STATUS_PROJECTION)
+
+
+def cohort_schedule(ordinal, first_signal_month, hol, horizon=36):
+    """cohort 하나의 signal → entry → nominal maturity → exit session.
+
+    R33A 계약: nominal maturity = **entry target date** + 36 calendar months.
+    signal date 를 anchor 로 쓰지 않는다.
+    """
+    y, m = (int(x) for x in first_signal_month.split("-")[:2])
+    t = m - 1 + (ordinal - 1)
+    sy, sm = y + t // 12, t % 12 + 1
+    signal = _first_session_of_month(sy, sm, hol)
+    entry = _next_session(signal, hol) if signal else None
+    nominal = _add_months(entry, horizon) if entry else None
+    # 실제 exit session 은 공식 캘린더가 그 시점까지 확정돼 있을 때만 기록한다.
+    if nominal and nominal <= OFFICIAL_FUTURE_CALENDAR_THROUGH:
+        exit_sess = _next_session(nominal, hol, inclusive=True)
+        exit_status = STATUS_CONFIRMED
+    else:
+        exit_sess, exit_status = None, STATUS_PENDING
+    return {
+        "cohortOrdinal": ordinal,
+        "signalDate": signal, "signalDateStatus": _status_for(signal),
+        "entryTargetDate": entry, "entryDateStatus": _status_for(entry),
+        "nominalMaturityDate": nominal,
+        "nominalMaturityDateStatus": (STATUS_NOMINAL if nominal
+                                      else STATUS_PENDING),
+        "actualExitTargetSession": exit_sess,
+        "actualExitSessionStatus": exit_status,
+        "maturityAnchor": "entryTargetDate",
+    }
 
 
 def oos_timeline(first_signal, horizon=36):
-    """monthly cadence · 36M horizon 에서 정보가 언제 쌓이는지."""
-    sigs = [first_signal]
-    for k in range(1, 40):
-        sigs.append(_add_months(first_signal, k))
-    mat = [_add_months(s, horizon) for s in sigs]
-    anchors = [mat[0], _add_months(sigs[0], horizon * 2)]
+    """entry anchor 기준 timeline. track 이 닫혔으므로 가정적 일정이다."""
+    hol = _holidays()
+    fs = first_signal[:7]
+    # 각 milestone 은 자기 cohort 의 signal→entry 에서 직접 계산한다.
+    # "첫 signal + n개월 + 36개월" 식 단축계산을 쓰지 않는다.
+    ords = {"first": 1, "12th": 12, "24th": 24, "36th": 36,
+            "firstNonOverlappingAnchor": 1,
+            "secondNonOverlappingAnchor": 1 + horizon}
+    ms = {k: cohort_schedule(v, fs, hol, horizon) for k, v in ords.items()}
+    review = max(ms["36th"]["nominalMaturityDate"],
+                 ms["secondNonOverlappingAnchor"]["nominalMaturityDate"])
     return {
         "task": TASK, "contractHash": contract_hash(),
         "cadence": "monthly", "horizonMonths": horizon,
-        "firstSignal": sigs[0], "firstMaturity": mat[0],
-        "maturity12th": mat[11], "maturity24th": mat[23], "maturity36th": mat[35],
-        "secondNonOverlappingAnchorMaturity": anchors[1],
-        "earliestFormalReview": max(mat[35], anchors[1]),
+        "maturityAnchorRule":
+            "R33A: nominal maturity = entry target date + 36 calendar months",
+        "signalDateAnchorUsed": False,
+        "addMonthsSource":
+            "r33b_supplement.add_months (canonical · 말일절단 수정본)",
+        "officialFutureCalendarThrough": OFFICIAL_FUTURE_CALENDAR_THROUGH,
+        "officialFutureCalendarBasis":
+            "curated KRX_HOLIDAYS 2026-01-01~2027-01-01 (R33C0 교차검증 불일치 0)",
+        "milestones": ms,
+        "earliestFormalReviewNominal": review,
+        "earliestFormalReviewStatus": STATUS_NOMINAL,
         "reviewTimeGate": REVIEW_TIME_GATE,
+        "timelineNature": "HYPOTHETICAL_TIMELINE_ONLY",
+        "operationalSchedule": STATUS_NA_CLOSED,
+        "why": ("prospective track 이 PROSPECTIVE_OOS_NO_GO 로 종료됐다. "
+                "이 일정은 운영계획이 아니라 계약 정합성 확인용이다."),
         "performanceFunctionCalls": 0,
     }
 

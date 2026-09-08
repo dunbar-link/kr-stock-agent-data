@@ -521,10 +521,14 @@ def _r33c0_producer_hook() -> None:
         sys.path.insert(0, str(Path(__file__).resolve().parent / "research"))
         import r33c0_research_data_producer as P
         verdict, st = P.run_daily()
+        # R33 prospective track 은 R33C0C 에서 CLOSED 로 종결됐다. 종결된 track 의
+        # PIT 차단을 매일 이 줄에 올리지 않는다(반복 경고 제거). 공식 일별·캘린더
+        # 실제 건강상태는 계속 표면화한다.
         print(f"[R33C0] producer={verdict} "
               f"officialDailyThrough={st.get('officialDailyThrough')} "
-              f"nextSignal={st.get('nextScheduledSignalDate')} "
-              f"pit={(st.get('pit') or {}).get('status')} "
+              f"dailyHealth={st.get('officialDailyHealth')} "
+              f"calendarHealth={st.get('calendarHealth')} "
+              f"r33={st.get('disposition')} "
               f"apiCalls={st.get('apiCalls', 0)}")
     except Exception as e:  # noqa: BLE001
         # silent failure 금지 — 표면화하되 core 판정은 바꾸지 않는다.

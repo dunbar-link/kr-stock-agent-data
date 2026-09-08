@@ -26,6 +26,7 @@ WABABA-PROSPECTIVE-EXECUTION-TRANSLATION-PRECOMMIT-R33A
 """
 from __future__ import annotations
 
+import calendar
 import csv
 import gzip
 import json
@@ -152,12 +153,9 @@ def add_months(iso, months):
     m2 = m + months
     y2 = y + (m2 - 1) // 12
     m2 = (m2 - 1) % 12 + 1
-    for dd in range(d, 27, -1):
-        try:
-            return date(y2, m2, dd).isoformat()
-        except ValueError:
-            continue
-    return date(y2, m2, 28).isoformat()
+    # 말일 절단: 1/31 + 1개월 → 2/28(29). range(d, 27, -1) 은 d<=27 일 때
+    # 빈 range 라 항상 28일로 떨어지는 결함이 있었다(2026-09-08 R33B 에서 실측·수정).
+    return date(y2, m2, min(d, calendar.monthrange(y2, m2)[1])).isoformat()
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -507,7 +507,28 @@ def main(argv=None) -> int:
         print(f"  md: {md_path}")
         print(f"  txt: {txt_path} (notepad opened={opened})")
         print(f"  다음: {next_action_line(o)}")
+
+    # ── R33C0 연구 데이터 producer additive hook ──────────────────────
+    #   기존 예약작업 하나를 재사용한다(신규 task/trigger 0). 이 호출의 실패가
+    #   위 오전보고(core)의 판정을 덮어쓰지 않도록 전부 격리한다.
+    _r33c0_producer_hook()
     return 0
+
+
+def _r33c0_producer_hook() -> None:
+    """연구 데이터 continuation 을 증분 갱신한다. core 와 실패 격리·표면화."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "research"))
+        import r33c0_research_data_producer as P
+        verdict, st = P.run_daily()
+        print(f"[R33C0] producer={verdict} "
+              f"officialDailyThrough={st.get('officialDailyThrough')} "
+              f"nextSignal={st.get('nextScheduledSignalDate')} "
+              f"pit={(st.get('pit') or {}).get('status')} "
+              f"apiCalls={st.get('apiCalls', 0)}")
+    except Exception as e:  # noqa: BLE001
+        # silent failure 금지 — 표면화하되 core 판정은 바꾸지 않는다.
+        print(f"[R33C0] producer=HOOK_FAILED {type(e).__name__}: {str(e)[:200]}")
 
 
 if __name__ == "__main__":

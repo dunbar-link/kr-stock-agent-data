@@ -11,7 +11,26 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 
 import pandas as pd
+
+# pykrx 1.2.7 은 아래 import 한 줄에서 data.krx.co.kr 로 로그인 POST 를 보낸다
+# (website/comm/webio.py 모듈 레벨의 build_krx_session()). 그런데 login_krx() 가
+# KRX 응답의 _error_code 를 버리고 CD001 이 아니면 전부 같은 문구로 뭉개서
+# 실패 원인을 구분할 수 없다. 아래 관찰기는 **이미 발생하는 그 요청 하나만**
+# 지켜보며 안전한 코드만 기록한다 — 새 요청 0, 본문·헤더·쿠키·비밀값 기록 0,
+# 로그인 동작 변경 0. 관찰 실패가 본 실행을 깨뜨리지 않는다.
+try:
+    import krx_auth_observer as _krx_obs
+    _krx_obs.install()
+except Exception:  # noqa: BLE001
+    _krx_obs = None
+
 from pykrx import stock
+
+if _krx_obs is not None:
+    try:
+        _krx_obs.uninstall()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 ROOT = Path(__file__).resolve().parents[1]

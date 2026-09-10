@@ -14,11 +14,14 @@ import argparse
 import json
 import sys
 
-import build_magic_signal_package as B
 import magic_daily_common as C
+
+# R4: build_magic_signal_package(→ build_market_snapshot_fast → pykrx 웹 로그인)는 HOLD 판정 **뒤**
+#     run_signal 안에서만 import 한다. HOLD 중에는 이 모듈 import 만으로 로그인 경로가 열리지 않는다.
 
 
 def run_signal(signal_date: str, *, now=None, output_dir=None, build_payload_fn=None, ranking_fn=None) -> dict:
+    import build_magic_signal_package as B   # R4: HOLD 게이트 통과 후에만 적재
     from datetime import datetime
     now = now or C.now_kst().isoformat()
     try:
@@ -73,6 +76,12 @@ def run_signal(signal_date: str, *, now=None, output_dir=None, build_payload_fn=
                             recommended_fix="signal 입력/거래일/유니버스 baseDate 확인")
 
 
+def _magic_hold_gate() -> dict:
+    """R4 paper lane HOLD 판정(stdlib only · 네트워크 0). 테스트는 이 함수를 교체한다."""
+    import magic_paper_lane_hold as H
+    return H.evaluate()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="마법공식 종가 신호 패키지 일일 자동 생성(TEMP only)")
     ap.add_argument("--signal-date", default=None, help="YYYY-MM-DD (생략 시 오늘 KST)")
@@ -81,6 +90,16 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     signal_date = args.signal_date or C.today_kst_iso()
+    # R4: 의도적 HOLD 게이트 — signal 패키지·pykrx import 전에 판정한다.
+    #     HOLD → EXPECTED_HOLD_NO_ACTION(exit 0) · 정책 손상/무단 변경 → BLOCKED_HOLD_POLICY_INVALID(exit 3).
+    #     어떤 경우에도 HOLD 를 무시하고 기존 signal 생성으로 넘어가지 않는다(fail-closed).
+    gate = _magic_hold_gate()
+    if gate.get("decision") != "UNHELD":
+        import magic_paper_lane_hold as H
+        return H.emit(phase="SIGNAL", date_iso=signal_date, gate=gate,
+                      report_path=C.REPORTS_DIR / f"signal-{signal_date}.json",
+                      write_json=C.write_json_report, as_json=args.json,
+                      extra={"signalAsOfDate": signal_date})
     r = run_signal(signal_date, now=args.now)
     C.write_json_report(C.REPORTS_DIR / f"signal-{signal_date}.json", r)
     if args.json:

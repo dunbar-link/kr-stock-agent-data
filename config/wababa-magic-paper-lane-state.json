@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "wababa.magic-paper-lane-state/v1",
+  "state": "HOLD",
+  "reasonClass": "HOLD_NO_CANONICAL_SAME_DAY_SOURCE",
+  "sourceTask": "WABABA-MAGIC-FORMULA-PYKRX-WEB-DEPENDENCY-AND-OFFICIAL-SOURCE-GO-NOGO-R3",
+  "sourceCommit": "21fdced",
+  "sourceDecision": "OFFICIAL_SOURCE_REPLACEMENT_NO_GO",
+  "sourceDecisionCauses": [
+    "INDUSTRY_CLASSIFICATION_ABSENT_IN_OFFICIAL_SOURCE (financial/utility exclusion not reproducible)",
+    "OFFICIAL_DAILY_DATA_PUBLISHED_T_PLUS_1 (same-day 15:40 signal not supportable)"
+  ],
+  "holdTask": "WABABA-MAGIC-FORMULA-PAPER-LANE-HOLD-ENFORCEMENT-AND-TRANSPARENCY-R4",
+  "lastNormalTradeDate": "2026-09-04",
+  "lastNormalSequence": 43,
+  "lastNormalCanonicalSha256": "5659252b838912721b1cc053228c0e9e7f26482b9a2b6a66492835ec8afb9c44",
+  "incidentMissedSignalDates": [
+    "2026-09-07",
+    "2026-09-08",
+    "2026-09-09",
+    "2026-09-10"
+  ],
+  "incidentMissedReason": "MISSED_RUN_NO_VALID_PIT_EVIDENCE",
+  "incidentMissedRecords": [
+    {
+      "signalDate": "2026-09-07",
+      "expectedTask": "Wababa Magic Daily Signal",
+      "reasonClass": "MISSED_RUN_NO_VALID_PIT_EVIDENCE",
+      "signalPackagePresent": false,
+      "immutablePITEvidencePresent": false,
+      "tradeCreated": false,
+      "canonicalAppend": false,
+      "adjudicatedBy": "R3",
+      "recordedBy": "R4",
+      "sourceTask": "WABABA-MAGIC-FORMULA-PYKRX-WEB-DEPENDENCY-AND-OFFICIAL-SOURCE-GO-NOGO-R3",
+      "sourceCommit": "21fdced",
+      "idempotencyKey": "2026-09-07+MISSED_RUN_NO_VALID_PIT_EVIDENCE"
+    },
+    {
+      "signalDate": "2026-09-08",
+      "expectedTask": "Wababa Magic Daily Signal",
+      "reasonClass": "MISSED_RUN_NO_VALID_PIT_EVIDENCE",
+      "signalPackagePresent": false,
+      "immutablePITEvidencePresent": false,
+      "tradeCreated": false,
+      "canonicalAppend": false,
+      "adjudicatedBy": "R3",
+      "recordedBy": "R4",
+      "sourceTask": "WABABA-MAGIC-FORMULA-PYKRX-WEB-DEPENDENCY-AND-OFFICIAL-SOURCE-GO-NOGO-R3",
+      "sourceCommit": "21fdced",
+      "idempotencyKey": "2026-09-08+MISSED_RUN_NO_VALID_PIT_EVIDENCE"
+    },
+    {
+      "signalDate": "2026-09-09",
+      "expectedTask": "Wababa Magic Daily Signal",
+      "reasonClass": "MISSED_RUN_NO_VALID_PIT_EVIDENCE",
+      "signalPackagePresent": false,
+      "immutablePITEvidencePresent": false,
+      "tradeCreated": false,
+      "canonicalAppend": false,
+      "adjudicatedBy": "R3",
+      "recordedBy": "R4",
+      "sourceTask": "WABABA-MAGIC-FORMULA-PYKRX-WEB-DEPENDENCY-AND-OFFICIAL-SOURCE-GO-NOGO-R3",
+      "sourceCommit": "21fdced",
+      "idempotencyKey": "2026-09-09+MISSED_RUN_NO_VALID_PIT_EVIDENCE"
+    },
+    {
+      "signalDate": "2026-09-10",
+      "expectedTask": "Wababa Magic Daily Signal",
+      "reasonClass": "MISSED_RUN_NO_VALID_PIT_EVIDENCE",
+      "signalPackagePresent": false,
+      "immutablePITEvidencePresent": false,
+      "tradeCreated": false,
+      "canonicalAppend": false,
+      "adjudicatedBy": "R3",
+      "recordedBy": "R4",
+      "sourceTask": "WABABA-MAGIC-FORMULA-PYKRX-WEB-DEPENDENCY-AND-OFFICIAL-SOURCE-GO-NOGO-R3",
+      "sourceCommit": "21fdced",
+      "idempotencyKey": "2026-09-10+MISSED_RUN_NO_VALID_PIT_EVIDENCE"
+    }
+  ],
+  "missedRunRecordingMethod": "HOLD_POLICY_AND_R4_REPORT_ONLY",
+  "missedRunRecordingWhy": "existing canonical primitive scripts/record_magic_missed_run.py verifies the trading day through pykrx (KRX web login; forbidden in R4 and currently failing with CD007) and mutates officialTradingDayIndex/officialKrxTradingCalendar. Canonical ledger is left untouched.",
+  "effectiveAt": "2026-09-10T22:54:28+09:00",
+  "effectiveAtBasis": "LOCAL_RUNTIME_ACTIVATION: scheduler working directory is this repository, so the policy is in force as soon as it is written; remote push time is recorded in the R4 report",
+  "firstIntentionalHoldSignalDate": "2026-09-11",
+  "signalGenerationAllowed": false,
+  "autoApplyAllowed": false,
+  "historicalReplayAllowed": false,
+  "webLoginAllowed": false,
+  "credentialChangeRequired": false,
+  "publicPublishAllowed": false,
+  "publicDisclosureStatus": "DRAFT_ONLY_NOT_APPROVED",
+  "realMoneyApproved": false,
+  "paperOnly": true,
+  "unholdRequiresFounderApproval": true,
+  "resumeCondition": [
+    "Founder approves a canonical same-day market source plus industry-classification contract that reproduces the unchanged strategy",
+    "or Founder separately approves a strategy-translation study that changes signal timing / universe / strategy"
+  ],
+  "resumePreconditions": [
+    "incident dates and the whole hold interval must be excluded from Auto Apply catch-up (unapplied_execution_dates() would otherwise treat them as pending trades)",
+    "record incident dates through the canonical missed-run primitive only once a canonical trading-day source exists",
+    "update EXPECTED_POLICY_SHA256 in scripts/magic_paper_lane_hold.py in the same reviewed commit",
+    "CD007 resolution or a password change alone does NOT resume the lane (R3 NO_GO causes remain)"
+  ],
+  "naturalObservation": {
+    "id": "WABABA-MAGIC-FORMULA-PAPER-LANE-HOLD-ENFORCEMENT-R4:NATURAL-HOLD-CLOSEOUT:2026-09-11",
+    "owner": "WABABA PROJECT",
+    "due": "2026-09-11T17:10:00+09:00",
+    "dueBasis": "last related task end (16:25 Auto Apply / 17:00 Auto Publish) + 10 min",
+    "observerPath": "existing scheduled task Wababa Magic Morning Combined Report (07:40 daily, HOLD-aware since R4) - first natural run after due",
+    "sharedFutureResumeRegistry": "NOT_WRITTEN_AUTOMATION_REPOSITORY_READ_ONLY",
+    "resumeCondition": [
+      "Signal / Dry Run / Status / Auto Apply natural runs complete",
+      "Auto Publish natural run complete (Magic-gated publish)",
+      "hold statuses and scheduler results readable"
+    ],
+    "founderAction": "NONE"
+  },
+  "nextSingleTask": "NONE",
+  "policySha256": "bc2b94313368592e571baddbab0f04dd62919d325d033d708e82e8d4f2f3b2e5"
+}

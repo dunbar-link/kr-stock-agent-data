@@ -17,6 +17,8 @@ Auto Publish 는 "평일 17:00" 이라는 달력 조건만으로 publish 하지 
   8) 실주문 수 0
   9) 브로커 호출 수 0
 추가) Auto Apply 프로세스가 아직 lock 을 들고 있으면 동시 publish 금지(§8 지연 안전장치)
+R4) 마법공식 paper lane 의도적 HOLD 면 SKIPPED_EXPECTED_HOLD(exit 10 정상 self-skip),
+    HOLD 정책 손상·무단 변경이면 BLOCKED_HOLD_POLICY_INVALID(fail-closed)
 
 어떤 파일도 쓰지 않는다. 결정만 stdout JSON 으로 낸다.
 exit 0 = PROCEED, 10 = SKIP(정상 self-skip), 2 = BLOCKED(선행 미완료 — non-success)
@@ -39,6 +41,8 @@ APPLY_STATUS_JSON = ROOT / "reports" / "magic-auto-apply-status-latest.json"
 
 PROCEED = "PROCEED"
 SKIP_NON_TRADING_DAY = "SKIPPED_NON_TRADING_DAY"
+# R4: 마법공식 paper lane 의도적 HOLD — 신규 거래·장부 변경이 없으므로 publish 도 정상 self-skip(exit 10).
+SKIP_EXPECTED_HOLD = "SKIPPED_EXPECTED_HOLD"
 
 # Auto Apply 가 "정상 종료"로 인정되는 status (그 외는 선행 미완료로 본다)
 APPLY_OK_STATUSES = {"APPLIED_AUTOMATICALLY", "NO_ACTION_ALREADY_CURRENT"}
@@ -76,7 +80,7 @@ def _result(decision: str, *, verdict: str, reason: str, today: str,
 
 def evaluate(*, today_iso: str, canonical: dict | None, apply_status: dict | None,
              lock_held: bool, public_model_error: str | None,
-             quality_status: dict | None = None) -> dict:
+             quality_status: dict | None = None, hold_state: dict | None = None) -> dict:
     """순수 판정(파일 접근 없음 — 호출자가 읽어서 넘긴다). 테스트에서 그대로 재사용."""
     checks: dict = {}
 
@@ -99,6 +103,26 @@ def evaluate(*, today_iso: str, canonical: dict | None, apply_status: dict | Non
         return _result(SKIP_NON_TRADING_DAY, verdict="PASS", today=today_iso,
                        reason=f"{today_iso} 은 한국 증시 실제 거래일이 아님 — publish self-skip",
                        checks=checks, publishTargetDate=None)
+
+    # R4) 마법공식 paper lane 의도적 HOLD — 신규 거래·장부 변경이 없으므로 publish 도 정상 self-skip.
+    #     hold_state=None(순수 판정 fixture)이면 검사하지 않는다. run() 은 항상 실제 판정을 넘긴다.
+    #     정책 손상·무단 변경은 fail-closed(BLOCKED) — HOLD 를 무시하고 publish 로 넘어가지 않는다.
+    if hold_state is not None:
+        import magic_paper_lane_hold as H
+        hold_decision = hold_state.get("decision")
+        checks["magicPaperLaneUnheld"] = (hold_decision == H.DECISION_UNHELD)
+        if hold_decision == H.DECISION_HOLD:
+            pol = hold_state.get("policy") or {}
+            return _result(SKIP_EXPECTED_HOLD, verdict="PASS", today=today_iso,
+                           reason=(f"마법공식 paper lane 의도적 HOLD({H.LANE_STATE}) — 마지막 정상 거래 "
+                                   f"{pol.get('lastNormalTradeDate')} · 신규 거래 없음 · publish self-skip"),
+                           checks=checks, publishTargetDate=None,
+                           magicPaperLaneState=H.LANE_STATE,
+                           holdClassification=H.HOLD_CLASSIFICATION, founderAction="없음")
+        if hold_decision != H.DECISION_UNHELD:
+            return _result(H.BLOCKED_HOLD_POLICY_INVALID, verdict="BLOCKED", today=today_iso,
+                           reason=f"HOLD 정책 무효({hold_state.get('code')}) — publish 중단(fail-closed)",
+                           checks=checks, founderAction="HOLD 정책파일 손상/무단 변경 원인 확인")
 
     # 추가) Auto Apply 가 아직 돌고 있으면 동시 publish 금지(기존 lock 재사용)
     checks["applyNotInProgress"] = not lock_held
@@ -191,6 +215,12 @@ def evaluate(*, today_iso: str, canonical: dict | None, apply_status: dict | Non
                    officialTradingDayIndex=canonical.get("officialTradingDayIndex"))
 
 
+def _magic_hold_gate() -> dict:
+    """R4 paper lane HOLD 판정(stdlib only · 네트워크 0). 테스트는 이 함수를 교체한다."""
+    import magic_paper_lane_hold as H
+    return H.evaluate()
+
+
 def run(*, today_iso: str | None = None, canonical_path: Path = CANONICAL_PATH,
         apply_status_path: Path = APPLY_STATUS_JSON, lock_path: Path | None = None) -> dict:
     today_iso = today_iso or C.today_kst_iso()
@@ -224,7 +254,7 @@ def run(*, today_iso: str | None = None, canonical_path: Path = CANONICAL_PATH,
 
     return evaluate(today_iso=today_iso, canonical=canonical, apply_status=apply_status,
                     lock_held=Path(lock_path).exists(), public_model_error=public_model_error,
-                    quality_status=quality_status)
+                    quality_status=quality_status, hold_state=_magic_hold_gate())
 
 
 def main(argv=None) -> int:
@@ -239,7 +269,7 @@ def main(argv=None) -> int:
     print(json.dumps(r, ensure_ascii=False), flush=True)
     if r["decision"] == PROCEED:
         return EXIT_PROCEED
-    if r["decision"] == SKIP_NON_TRADING_DAY:
+    if r["decision"] in (SKIP_NON_TRADING_DAY, SKIP_EXPECTED_HOLD):
         return EXIT_SKIP
     return EXIT_BLOCKED
 

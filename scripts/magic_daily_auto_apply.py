@@ -776,6 +776,12 @@ def write_durable_status(result: dict, *, json_path: Path | None = None,
     mp.write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
+def _magic_hold_gate() -> dict:
+    """R4 paper lane HOLD 판정(stdlib only · 네트워크 0). 테스트는 이 함수를 교체한다."""
+    import magic_paper_lane_hold as H
+    return H.evaluate()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="마법공식 가상 장부 무인 자동 반영(미반영 거래일을 오래된 순서대로 연속 반영, 실주문 없음)")
@@ -787,6 +793,28 @@ def main(argv=None) -> int:
                     help=f"catch-up 반복 상한(기본·최대 {CATCHUP_MAX_ITERATIONS})")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
+
+    # R4: 의도적 HOLD 게이트 — lock·canonical 반영·catch-up·dry-run 재도출(pykrx) 전에 판정한다.
+    #     HOLD → SKIPPED_EXPECTED_HOLD(verdict WAIT · exit 0 · 장부는 읽기만) / 정책 무효 → BLOCKED(exit 3).
+    #     HOLD 기간 거래일은 pending 으로 쌓아 소급 반영하지 않는다(재개 전제는 정책파일 resumePreconditions).
+    gate = _magic_hold_gate()
+    if gate.get("decision") != "UNHELD":
+        import magic_paper_lane_hold as H
+        hold_date = args.date or C.today_kst_iso()
+        r, rc = H.apply_hold_result(date_iso=hold_date, gate=gate, canonical_path=C.CANONICAL_PATH,
+                                    policy_version=POLICY_VERSION,
+                                    archive_recipient=OPS_ARCHIVE_RECIPIENT,
+                                    alert_recipient=FOUNDER_ALERT_RECIPIENT)
+        C.write_json_report(C.REPORTS_DIR / f"auto-apply-{hold_date}.json", r)
+        if not args.dry_run:
+            write_durable_status(r)
+        if args.json:
+            print(json.dumps(r, ensure_ascii=False, indent=2))
+        else:
+            print(f"[AUTO_APPLY {hold_date}] status={r['status']} verdict={r['verdict']} "
+                  f"canonicalChanged=False founderNotified={r.get('founderNotified')} "
+                  f"reason={r.get('reasonClass') or r.get('blockedCode')}")
+        return rc
 
     # --dry-run 은 장부를 바꾸지 않으므로 반복하면 같은 날짜를 무한 재평가하게 된다 → 항상 1회.
     if args.dry_run or args.no_catchup:

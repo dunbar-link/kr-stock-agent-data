@@ -33,6 +33,10 @@ CORE_TASKS = ("Wababa Magic Daily Signal", "Wababa Magic Daily Dry Run", "Wababa
 OBSERVE_TASK = "Wababa Magic Daily Observe Report"
 MORNING_TASK = "Wababa Magic Morning Combined Report"
 ALL_TASKS = CORE_TASKS + (OBSERVE_TASK, MORNING_TASK)
+# R4: 마법공식 paper lane HOLD 중에만 관찰하는 작업(정상 경로 판정·조회 목록은 불변).
+AUTO_APPLY_TASK = "Wababa Magic Daily Auto Apply"
+AUTO_PUBLISH_TASK = "Wababa Auto Publish"
+HOLD_LANE_TASKS = CORE_TASKS + (AUTO_APPLY_TASK, AUTO_PUBLISH_TASK)
 CORE_TIMES = {"Wababa Magic Daily Signal": "15:40", "Wababa Magic Daily Dry Run": "15:45",
               "Wababa Magic Daily Status": "16:05"}
 
@@ -130,7 +134,8 @@ def _find_task(sched, name):
 # ============================== 판정(순수 함수) ==============================
 
 def classify_morning(*, today, yesterday, now_dt, is_today_trading, is_yesterday_trading,
-                     canonical, y_dryrun, evidence, sched, live, repo1, repo2, backup_done) -> dict:
+                     canonical, y_dryrun, evidence, sched, live, repo1, repo2, backup_done,
+                     hold=None, web_auth=None, y_signal=None, y_status=None, apply_status=None) -> dict:
     """어제 관찰 + 오늘 준비 → 통합 판정(순수 함수). 시간/OS/네트워크 주입. write 0."""
     canon_seq = (canonical or {}).get("officialSequence")
     y_seq = (y_dryrun or {}).get("proposedSequence")
@@ -140,6 +145,21 @@ def classify_morning(*, today, yesterday, now_dt, is_today_trading, is_yesterday
     today_expected_batch = f"MF-BATCH-{today}"
 
     blocked, action_warns, known_warns = [], [], []
+
+    # --- R4: 마법공식 paper lane 의도적 HOLD — 정상 경로(어제 dry-run COMPLETED 기대)와 분리한다 ---
+    #     hold=None(기존 fixture)이면 기존 판정 그대로. 정책 무효는 fail-closed(BLOCKED).
+    if hold is not None and hold.get("decision") == "HOLD":
+        return _classify_hold(today=today, yesterday=yesterday, is_yesterday_trading=is_yesterday_trading,
+                              canonical=canonical, y_dryrun=y_dryrun, y_signal=y_signal, y_status=y_status,
+                              apply_status=apply_status, sched=sched, live=live, repo1=repo1,
+                              repo2=repo2, backup_done=backup_done, hold=hold, web_auth=web_auth)
+    if hold is not None and hold.get("decision") != "UNHELD":
+        blocked.append(f"HOLD 정책 무효({hold.get('code')}): {hold.get('reason')} — fail-closed")
+        r = _result("BLOCKED", "HOLD 정책 무효 — 원인분리 전까지 운영 진행 금지", "HOLD_POLICY_INVALID",
+                    today, yesterday, None, None, None, None, canon_seq, blocked, action_warns,
+                    known_warns, backup_done)
+        r["magicPaperLaneState"] = "HOLD_POLICY_INVALID"
+        return r
 
     # --- 어제 산출물 없음 → WAIT ---
     if y_dryrun is None:
@@ -233,6 +253,146 @@ def classify_morning(*, today, yesterday, now_dt, is_today_trading, is_yesterday
                    known_warns, backup_done)
 
 
+def _classify_hold(*, today, yesterday, is_yesterday_trading, canonical, y_dryrun, y_signal, y_status,
+                   apply_status, sched, live, repo1, repo2, backup_done, hold, web_auth) -> dict:
+    """R4 — 마법공식 paper lane 의도적 HOLD 판정(순수 함수 · write 0).
+
+    의도된 중지는 known-warn(KNOWN_INTENTIONAL_HOLD)으로 분리하고 **HOLD 중 새로 생긴 이상만** 올린다.
+      BLOCKED: HOLD 발효 후 마법공식 경로 KRX 웹 로그인 · HOLD 일 산출물이 HOLD 아님 · 발효 후 lane 작업
+               non-zero · canonical/live 변화 · Auto Apply 장부 변경
+      known  : HOLD 자체 · 사고 누락일(R3 판정) · 발효 전 실패 기록
+    첫 의도적 HOLD 일 다음 아침에는 R4 자연 관찰(naturalObservation) 판정도 함께 낸다.
+    """
+    from datetime import datetime as _dt
+    import magic_paper_lane_hold as H
+
+    def _ge(a, b):   # ISO 시각 비교(파싱 실패 시 문자열 비교)
+        try:
+            return _dt.fromisoformat(str(a)) >= _dt.fromisoformat(str(b))
+        except (TypeError, ValueError):
+            return str(a) >= str(b)
+
+    pol = hold.get("policy") or {}
+    eff = str(pol.get("effectiveAt") or "")
+    eff_local = eff[:19]            # 스케줄러 lastRunTime 은 tz 없는 로컬(KST) 문자열
+    first = str(pol.get("firstIntentionalHoldSignalDate") or "")
+    incident = [str(d) for d in (pol.get("incidentMissedSignalDates") or [])]
+    obs_day = bool(yesterday and first and str(yesterday) == first)
+    canon = canonical or {}
+    canon_seq = canon.get("officialSequence")
+    blocked, action_warns, known_warns, gaps = [], [], [], []
+    known_warns.append(f"마법공식 paper lane 의도적 HOLD({H.LANE_STATE}) — 마지막 정상 거래 "
+                       f"{pol.get('lastNormalTradeDate')}(seq {pol.get('lastNormalSequence')}) · "
+                       "신규 signal·거래 0 · 재개는 Founder 승인 필요")
+
+    # --- 장부 불변: HOLD 중 canonical 은 움직이면 안 된다 ---
+    if isinstance(canon_seq, int) and canon_seq != pol.get("lastNormalSequence"):
+        blocked.append(f"HOLD 중 canonical seq {canon_seq} != 마지막 정상 seq {pol.get('lastNormalSequence')}")
+    sha16 = str(canon.get("canonicalSha256") or "")
+    if sha16 and sha16 != str(pol.get("lastNormalCanonicalSha256") or "")[:len(sha16)]:
+        blocked.append("HOLD 중 canonical 내용 변경 감지(sha 불일치)")
+
+    # --- 어제: 사고 누락일 / 의도적 HOLD 일 ---
+    ys = (y_signal or {}).get("status")
+    yd = (y_dryrun or {}).get("status") or (y_dryrun or {}).get("runStatus")
+    yt = (y_status or {}).get("status")
+    hold_day = bool(yesterday and first and str(yesterday) >= first and is_yesterday_trading
+                    and str(yesterday) not in incident)
+    if yesterday and str(yesterday) in incident:
+        known_warns.append(f"어제 {yesterday} 사고 누락일({pol.get('incidentMissedReason')}) — 거래 소급 없음")
+    elif hold_day:
+        known_warns.append(f"어제 {yesterday} 의도적 HOLD 일 — missed-run 아님")
+        for label, rep, st in (("signal", y_signal, ys), ("dry-run", y_dryrun, yd), ("status", y_status, yt)):
+            if rep is None:
+                action_warns.append(f"어제 {label} HOLD 산출물 없음(스케줄러 미실행 가능)")
+                gaps.append(f"{label} 산출물 없음")
+            elif st != H.STATUS_EXPECTED_HOLD:
+                blocked.append(f"어제 {label} status={st!r} — HOLD 인데 {H.STATUS_EXPECTED_HOLD} 아님")
+            elif rep.get("webLoginAttemptCount") not in (0, None) or rep.get("signalGenerated"):
+                blocked.append(f"어제 {label} 가 HOLD 중 로그인/signal 생성 흔적 보고")
+        ap = apply_status if isinstance(apply_status, dict) else None
+        if ap is None or str(ap.get("date") or "") < str(yesterday):
+            action_warns.append("어제 Auto Apply HOLD 기록 없음(16:25 미실행 가능)")
+            gaps.append("Auto Apply 기록 없음")
+        elif ap.get("status") != H.APPLY_SKIPPED_EXPECTED_HOLD or ap.get("canonicalChanged"):
+            blocked.append(f"Auto Apply status={ap.get('status')!r} canonicalChanged={ap.get('canonicalChanged')} "
+                           "— HOLD 인데 SKIPPED_EXPECTED_HOLD 아님")
+
+    # --- HOLD 발효 후 KRX 웹 로그인(비밀값 없는 safe status artifact 만 읽는다) ---
+    magic_login = other_login = 0
+    attempts = (web_auth.get("attempts") or []) if isinstance(web_auth, dict) else []
+    for a in attempts:
+        if eff and _ge(a.get("observedAt") or "", eff):
+            if str(a.get("entrypoint") or "").startswith("magic_daily_"):
+                magic_login += 1
+            else:
+                other_login += 1
+    if magic_login:
+        blocked.append(f"HOLD 발효 후 마법공식 경로 KRX 웹 로그인 {magic_login}건 — HOLD 게이트 우회 의심")
+    if other_login:
+        action_warns.append(f"HOLD 발효 후 다른 lane KRX 웹 로그인 {other_login}건 — 마법공식 HOLD 와 별개(해당 lane 점검)")
+
+    # --- 스케줄러: HOLD lane 5종(발효 전 실패=known · 발효 후 non-zero=BLOCKED), 리포트 2종은 기존대로 ---
+    for name in HOLD_LANE_TASKS:
+        t = _find_task(sched, name)
+        if not t or not t.get("found"):
+            blocked.append(f"스케줄러 '{name}' 없음/조회실패")
+            continue
+        last = str(t.get("lastRunTime") or "")
+        if str(t.get("state")).lower() == "disabled":
+            blocked.append(f"스케줄러 '{name}' Disabled")
+        elif t.get("lastTaskResult") not in (0, None):
+            if eff_local and last and last < eff_local:
+                known_warns.append(f"스케줄러 '{name}' LastTaskResult={t.get('lastTaskResult')} — HOLD 발효 전 "
+                                   f"실행({last[:16]}) · 사고 누락일로 판정 완료")
+            else:
+                blocked.append(f"스케줄러 '{name}' LastTaskResult={t.get('lastTaskResult')} != 0 (HOLD 발효 후)")
+        if hold_day and last[:10] < str(yesterday):
+            action_warns.append(f"스케줄러 '{name}' 어제 자연 실행 기록 없음(last={last[:16] or '-'})")
+            gaps.append(f"{name} 자연 실행 기록 없음")
+    for name in (OBSERVE_TASK, MORNING_TASK):
+        t = _find_task(sched, name)
+        if not t or not t.get("found"):
+            action_warns.append(f"리포트 스케줄러 '{name}' 미등록(정보)")
+        elif str(t.get("state")).lower() == "disabled":
+            action_warns.append(f"리포트 스케줄러 '{name}' Disabled")
+
+    # --- live 정합: HOLD 중에도 publish 불일치는 실제 이상 ---
+    live_seq = (live or {}).get("deployedSequence")
+    if live and live.get("error"):
+        action_warns.append(f"live 조회 실패: {live.get('error')}")
+    elif live:
+        for label, key in (("home/json", "jsonHttp"), ("performance", "performanceHttp"),
+                           ("rankings", "rankingsHttp")):
+            code = live.get(key)
+            if code in (404, 500, 502, 503):
+                blocked.append(f"live {label} HTTP {code} (운영 장애)")
+            elif code != 200:
+                action_warns.append(f"live {label} HTTP {code} != 200")
+        if isinstance(live_seq, int) and isinstance(canon_seq, int) and live_seq != canon_seq:
+            blocked.append(f"canonical seq {canon_seq} != live seq {live_seq} (배포/publish 불일치)")
+
+    _repo_warns(repo1, repo2, blocked, action_warns, known_warns)
+
+    verdict = "BLOCKED" if blocked else ("WARNING" if action_warns else "WAIT")
+    hint = ("HOLD 중 이상 — 원인분리 전까지 운영 진행 금지" if blocked
+            else "마법공식 paper lane 의도적 HOLD 유지 — 신규 거래 없음 · Founder 행동 없음")
+    r = _result(verdict, hint, "HOLD", today, yesterday, None, None, None, None, canon_seq,
+                blocked, action_warns, known_warns, backup_done)
+    r.update(H.aggregate_status(
+        hold, current_signal_generated=bool((y_signal or {}).get("signalGenerated")),
+        current_auto_apply_status=(apply_status.get("status") if isinstance(apply_status, dict) else None)))
+    r.update({"webLoginAttemptCount": magic_login, "otherLaneWebLoginSinceHold": other_login,
+              "yesterdaySignalStatus": ys, "yesterdayDryRunStatus": yd, "yesterdayStatusStatus": yt,
+              "founderAction": "HOLD 중 이상 원인 확인" if blocked else "NONE"})
+    obs = pol.get("naturalObservation") or {}
+    if obs_day and obs.get("id"):
+        r["naturalObservationId"] = obs.get("id")
+        r["naturalObservationStatus"] = "FAILED" if blocked else ("INCOMPLETE" if gaps else "PROVEN")
+        r["naturalObservationGaps"] = gaps
+    return r
+
+
 def _repo_warns(repo1, repo2, blocked, action_warns, known_warns):
     for f in sorted(set((repo2 or {}).get("modified") or [])):
         (known_warns if f in OB.EXPECTED_WARN_REPO2 else action_warns).append(
@@ -276,6 +436,12 @@ def _result(verdict, hint, closeout_state, today, yesterday, y_seq, y_batch,
 
 # ============================== 오케스트레이션 ==============================
 
+def _magic_hold_gate() -> dict:
+    """R4 paper lane HOLD 판정(stdlib only · 네트워크 0). 테스트는 이 함수를 교체한다."""
+    import magic_paper_lane_hold as H
+    return H.evaluate()
+
+
 def build_report(today, *, now_dt=None) -> dict:
     now_dt = now_dt or C.now_kst()
     yesterday = previous_trading_day(today)
@@ -286,7 +452,10 @@ def build_report(today, *, now_dt=None) -> dict:
     signal_as_of = (y_dryrun or {}).get("signalAsOfDate")
     rankings_doc = OB.read_json(C.TEMP_ROOT / str(signal_as_of) / "rankings.json") if signal_as_of else None
     evidence = OB.collect_evidence(rankings_doc)
-    sched = query_scheduler_state()
+    # R4: paper lane HOLD 판정(stdlib · 네트워크 0). HOLD 중에는 16:25 Auto Apply · 17:00 Auto Publish 도 관찰한다.
+    hold = _magic_hold_gate()
+    sched = query_scheduler_state(ALL_TASKS + ((AUTO_APPLY_TASK, AUTO_PUBLISH_TASK)
+                                               if hold.get("decision") == "HOLD" else ()))
     live = observe_live_full()
     repo1 = git_state_ex(OB.REPO1_ROOT)
     repo2 = git_state_ex(OB.REPO2_ROOT)
@@ -296,7 +465,10 @@ def build_report(today, *, now_dt=None) -> dict:
         is_today_trading=C.is_krx_trading_day(today),
         is_yesterday_trading=(C.is_krx_trading_day(yesterday) if yesterday else False),
         canonical=canonical, y_dryrun=y_dryrun, evidence=evidence, sched=sched, live=live,
-        repo1=repo1, repo2=repo2, backup_done=backup_done)
+        repo1=repo1, repo2=repo2, backup_done=backup_done,
+        hold=hold, y_signal=y_signal, y_status=y_status,
+        web_auth=OB.read_json(OB.REPO2_ROOT / "reports" / "research" / "krx-web-auth-safe-status-latest.json"),
+        apply_status=OB.read_json(OB.REPO2_ROOT / "reports" / "magic-auto-apply-status-latest.json"))
     return {
         "schemaVersion": "magic-morning-combined-v1", "createdAt": now_dt.isoformat(), **verdict,
         "canonical": canonical, "yesterdayDryRun": y_dryrun, "yesterdaySignal": y_signal,
@@ -323,6 +495,12 @@ def next_action_line(o):
     n = o["todayExpectedSequence"]
     cs = o["closeoutState"]
     v = o["verdict"]
+    if cs == "HOLD_POLICY_INVALID":
+        return "Phase MF-HOLD-POLICY-FIX: HOLD 정책 무효 원인분리 (fail-closed · 운영 진행 금지)"
+    if cs == "HOLD":
+        if v == "BLOCKED":
+            return "Phase MF-HOLD-ANOMALY-FIX: HOLD 중 이상 원인분리 (운영 진행 금지)"
+        return "없음 — 마법공식 paper lane 의도적 HOLD 유지 (재개는 Founder 승인 필요)"
     if v == "BLOCKED":
         return f"Phase MF-SEQ{o['yesterdaySequence']}-BLOCKER-FIX: blocker 원인분리 (운영 진행 금지)"
     if v == "WAIT":
@@ -344,6 +522,8 @@ def _standard_header(o):
     cs = o["closeoutState"]
     if v == "BLOCKED":
         action = "blocker 원인분리 확인 (아래 '다음 단일 작업')"
+    elif cs == "HOLD":
+        action = "없음 (의도적 HOLD — 재개는 Founder 승인 필요)"
     elif cs == "READY_TO_CLOSEOUT":
         action = f"어제 seq={o['yesterdaySequence']} closeout 승인 필요 (아래 '다음 단일 작업')"
     elif v == "WAIT":
@@ -363,6 +543,14 @@ def _standard_header(o):
         f"오늘 예상 seq {o['todayExpectedSequence']} · 어제 신호 {signal_yn}",
         "실주문 0 · read-only 관찰 (canonical/publish 미변경)",
     ]
+    if cs == "HOLD":   # R4: 의도적 HOLD 가 '신호 생성됨' 같은 정상 운영 문구로 보이지 않게 한다
+        core = [
+            f"마법공식 paper lane 의도적 HOLD — 마지막 정상 거래 {o.get('lastNormalTradeDate')} "
+            f"(seq {o.get('lastNormalSeq')})",
+            f"어제 {o['yesterday']} signal/dry-run: {o.get('yesterdaySignalStatus')} / "
+            f"{o.get('yesterdayDryRunStatus')} · 마법공식 KRX 웹 로그인 {o.get('webLoginAttemptCount')}",
+            "신규 signal·거래 0 · 실주문 0 · canonical/publish 미변경",
+        ]
     return [
         "[프로젝트] 와바바",
         "[제목] 와바바 마법공식 오전 통합보고",
@@ -390,6 +578,25 @@ def to_markdown(o):
          f"- 어제 proposedSequence: {o['yesterdaySequence']} / batchId: {o['yesterdayBatchId']}",
          f"- 어제 closeout 상태: {o['closeoutState']} — {o['hint']}",
          f"- 오늘 운영 준비: 예상 seq {o['todayExpectedSequence']} / {o['todayExpectedBatchId']}", ""]
+    if o.get("closeoutState") == "HOLD":   # R4: HOLD 사실을 요약보다 먼저 보여준다
+        hold_lines = [
+            "## 0. 마법공식 paper lane HOLD (KNOWN_INTENTIONAL_HOLD)",
+            f"- 상태: {o.get('magicPaperLaneState')} · 사유: {o.get('reasonClass')}",
+            f"- 마지막 정상 거래: {o.get('lastNormalTradeDate')} (seq {o.get('lastNormalSeq')})",
+            f"- 사고 누락일: {', '.join(o.get('incidentMissedSignalDates') or []) or '없음'} (거래 소급 없음)",
+            f"- HOLD 발효: {o.get('holdEffectiveAt')} · 첫 의도적 HOLD signal 일: "
+            f"{o.get('firstIntentionalHoldSignalDate')}",
+            f"- 어제 signal / dry-run / status / Auto Apply: {o.get('yesterdaySignalStatus')} / "
+            f"{o.get('yesterdayDryRunStatus')} / {o.get('yesterdayStatusStatus')} / {o.get('currentAutoApplyStatus')}",
+            f"- HOLD 이후 KRX 웹 로그인: 마법공식 {o.get('webLoginAttemptCount')} · 다른 lane "
+            f"{o.get('otherLaneWebLoginSinceHold')}",
+            "- 신규 signal·ranking·lot·매수·매도·canonical append 0 · 공개 반영 없음 · 재개는 Founder 승인 필요"]
+        if o.get("naturalObservationId"):
+            hold_lines.append(f"- R4 자연 관찰 {o.get('naturalObservationId')}: {o.get('naturalObservationStatus')}"
+                              + (f" (공백: {'; '.join(o.get('naturalObservationGaps') or [])})"
+                                 if o.get("naturalObservationGaps") else ""))
+        i = L.index("## 1. 요약")
+        L[i:i] = hold_lines + [""]
     L += ["## 2. 어제 장마감 관찰 결과",
           f"- signal 존재: {o['yesterdaySignal'] is not None} / dry-run 존재: {o['yesterdayDryRun'] is not None} / status 존재: {o['yesterdayStatus'] is not None}",
           f"- status/runStatus: {dr.get('status') or dr.get('runStatus')} / blockedCode: {dr.get('blockedCode')}",
@@ -434,6 +641,9 @@ def to_markdown(o):
 
 def _chatgpt_request(o):
     n_close = o["yesterdaySequence"]
+    if o["closeoutState"] == "HOLD" and o["verdict"] != "BLOCKED":
+        return (f"와바바 마법공식 {o['today']} 오전 통합보고: paper lane 의도적 HOLD 유지(판정 {o['verdict']}). "
+                "새 지시문은 만들지 말고 HOLD 유지 확인만 안내해줘.")
     if o["verdict"] == "BLOCKED":
         return (f"와바바 마법공식 어제({o['yesterday']}) 관찰 BLOCKED다. 원인: {'; '.join(o['blocked']) or '상세 확인'}. "
                 "이 보고를 기준으로 와바바 blocker 원인분리 지시문을 만들어줘.")

@@ -91,11 +91,24 @@ def to_markdown(s: dict) -> str:
     return "\n".join(lines)
 
 
+def _magic_hold_gate() -> dict:
+    """R4 paper lane HOLD 판정(stdlib only · 네트워크 0). 테스트는 이 함수를 교체한다."""
+    import magic_paper_lane_hold as H
+    return H.evaluate()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="마법공식 일일 운용 상태 요약(read-only)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     today = C.today_kst_iso()
+    # R4: 의도적 HOLD 는 운영 실패(BLOCKED)가 아니라 WAIT 로 요약한다. 정책 무효는 fail-closed(exit 3).
+    gate = _magic_hold_gate()
+    if gate.get("decision") != "UNHELD":
+        import magic_paper_lane_hold as H
+        return H.emit_status(date_iso=today, gate=gate, reports_dir=C.REPORTS_DIR,
+                             write_json=C.write_json_report,
+                             canonical_summary=C.load_canonical_summary(), as_json=args.json)
     s = build_status(today)
     C.write_json_report(C.REPORTS_DIR / f"daily-status-{today}.json", s)
     md = to_markdown(s)

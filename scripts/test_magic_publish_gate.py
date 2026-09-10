@@ -266,6 +266,9 @@ def t23_run_today_matches_actual_calendar():
     today = C.today_kst_iso()
     if not C.is_krx_trading_day(today):
         assert r["decision"] == G.SKIP_NON_TRADING_DAY, r
+    elif G._magic_hold_gate().get("decision") == "HOLD":
+        # R4: 의도적 HOLD 중에는 거래일이어도 publish 를 정상 self-skip 한다.
+        assert r["decision"] == G.SKIP_EXPECTED_HOLD, r
     else:
         assert r["decision"] == G.PROCEED or r["decision"].startswith("BLOCKED_"), r
 

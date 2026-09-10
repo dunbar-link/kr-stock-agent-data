@@ -166,6 +166,12 @@ def write_dry_run_log(res: dict, *, unchanged: bool) -> str:
     return str(log)
 
 
+def _magic_hold_gate() -> dict:
+    """R4 paper lane HOLD 판정(stdlib only · 네트워크 0). 테스트는 이 함수를 교체한다."""
+    import magic_paper_lane_hold as H
+    return H.evaluate()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="마법공식 OFFICIAL read-only dry-run 일일 자동화(저장 0)")
     ap.add_argument("--signal-date", default=None, help="신호 패키지 signalAsOfDate(생략 시 오늘=executionDate 후보 자동탐색)")
@@ -173,6 +179,17 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     now_iso = C.now_kst().isoformat()
     today = C.today_kst_iso()
+
+    # R4: 의도적 HOLD 게이트 — signal 패키지 탐색·pykrx(캘린더·시가) 조회 전에 판정한다(fail-closed).
+    gate = _magic_hold_gate()
+    if gate.get("decision") != "UNHELD":
+        import magic_paper_lane_hold as H
+        return H.emit(phase="DRY_RUN", date_iso=today, gate=gate,
+                      report_path=C.REPORTS_DIR / f"dry-run-{today}.json",
+                      write_json=C.write_json_report, as_json=args.json,
+                      extra={"reasonClass": H.DOWNSTREAM_REASON, "executionDate": None,
+                             "signalAsOfDate": None, "signalPackageRequired": False,
+                             "readOnlyUnchanged": True})
 
     if args.signal_date:
         pkg_dir = C.TEMP_ROOT / args.signal_date

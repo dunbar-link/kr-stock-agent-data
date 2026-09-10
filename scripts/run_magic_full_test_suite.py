@@ -38,6 +38,7 @@ FULL_SUITE = [
     "test_magic_live_verify.py",
     "test_magic_backup.py",
     "test_magic_auto_apply_catchup.py",
+    "test_magic_paper_lane_hold.py",
     "test_magic_execution_profile.py",
     "test_kospi_benchmark.py",
     "test_public_benchmark_contract.py",

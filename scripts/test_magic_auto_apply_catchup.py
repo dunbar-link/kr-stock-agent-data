@@ -264,8 +264,10 @@ def _fake_single(**kw):
 
 
 _orig = (AA.run_auto_apply_catchup, AA.run_auto_apply, AA.write_durable_status,
-         AA.C.write_json_report)
+         AA.C.write_json_report, AA._magic_hold_gate)
 try:
+    # R4: HOLD 게이트 동작은 test_magic_paper_lane_hold.py 가 고정한다. 여기선 기존 CLI 배선만 본다.
+    AA._magic_hold_gate = lambda: {"decision": "UNHELD"}
     AA.run_auto_apply_catchup = _fake_catchup
     AA.run_auto_apply = _fake_single
     AA.write_durable_status = lambda *a, **k: None
@@ -293,7 +295,7 @@ try:
     check("--max-catchup 전달", _seen["catchup"].get("max_iterations"), 3)
 finally:
     (AA.run_auto_apply_catchup, AA.run_auto_apply, AA.write_durable_status,
-     AA.C.write_json_report) = _orig
+     AA.C.write_json_report, AA._magic_hold_gate) = _orig
 
 print()
 print(f"결과: PASS {_pass} / FAIL {_fail}")
